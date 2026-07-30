@@ -1,0 +1,28 @@
+[package]
+name = "agent-repos"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96.1"
+description = "Maintain pinned clones of reference repositories for coding agents"
+repository = "https://github.com/luxass/agent-repos"
+license = "MIT"
+
+# No dependencies, by design. The binary shells out to `git` instead of linking
+# a git implementation, which is what keeps it under a few hundred kilobytes.
+# Anything added here must be an exact `=x.y.z` pin, never a caret range.
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
