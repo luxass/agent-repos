@@ -334,6 +334,236 @@ fn a_path_escaping_the_clone_directory_is_refused() {
     }
 }
 
+/// A fixture "remote": two commits, with `v1.0.0` on the first.
+struct Upstream {
+    scratch: Scratch,
+    first: String,
+    head: String,
+}
+
+fn upstream(label: &str) -> Upstream {
+    let scratch = repo(&format!("upstream-{label}"));
+    let dir = scratch.path.clone();
+
+    fs::write(dir.join("lib.txt"), "v1\n").unwrap();
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-qm", "first"]);
+    git(&dir, &["tag", "v1.0.0"]);
+    let first = String::from_utf8_lossy(&git(&dir, &["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    fs::write(dir.join("lib.txt"), "v2\n").unwrap();
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-qm", "second"]);
+    let head = String::from_utf8_lossy(&git(&dir, &["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    Upstream {
+        scratch,
+        first,
+        head,
+    }
+}
+
+impl Upstream {
+    fn url(&self) -> String {
+        self.scratch.path.to_string_lossy().into_owned()
+    }
+}
+
+#[test]
+fn add_with_a_tag_checks_out_that_tag() {
+    let up = upstream("tag");
+    let scratch = repo("add-tag");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+
+    let result = run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+
+    assert_eq!(
+        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        "v1\n",
+        "the tagged content should be checked out, not the branch head"
+    );
+
+    let text = manifest(dir);
+    assert!(text.contains("kind = \"tag\""));
+    assert!(text.contains("ref = \"v1.0.0\""));
+    assert!(!text.contains("track ="), "a tag pin has nothing to track");
+}
+
+#[test]
+fn add_without_a_ref_pins_the_default_head_commit() {
+    let up = upstream("head");
+    let scratch = repo("add-head");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+
+    let result = run(dir, &["add", &up.url(), "--name", "up"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+
+    let text = manifest(dir);
+    assert!(text.contains("kind = \"commit\""));
+    assert!(
+        text.contains(&format!("ref = \"{}\"", up.head)),
+        "should pin the exact head sha"
+    );
+    assert!(
+        text.contains("track = \"main\""),
+        "should record where the sha came from"
+    );
+
+    // The sha is pinned, so the checkout is the second commit's content.
+    assert_eq!(
+        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        "v2\n"
+    );
+    // And it is reported, not silently chosen.
+    assert!(result.stderr.contains("head of main"), "{}", result.stderr);
+}
+
+#[test]
+fn add_with_an_explicit_commit_checks_it_out() {
+    let up = upstream("commit");
+    let scratch = repo("add-commit");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+
+    let result = run(
+        dir,
+        &["add", &up.url(), "--commit", &up.first, "--name", "up"],
+    );
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert_eq!(
+        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        "v1\n"
+    );
+}
+
+#[test]
+fn add_derives_a_name_from_the_url() {
+    let up = upstream("naming");
+    let scratch = repo("add-name");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0"]);
+
+    let expected = up.scratch.path.file_name().unwrap().to_string_lossy();
+    assert!(manifest(dir).contains(&format!("name = \"{expected}\"")));
+}
+
+#[test]
+fn add_rejects_duplicates_and_bad_refs_without_writing() {
+    let up = upstream("reject");
+    let scratch = repo("add-reject");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+
+    let before = manifest(dir);
+
+    for (args, needle) in [
+        (
+            vec!["add", &up.url(), "--tag", "v1.0.0", "--name", "up"],
+            "already configured",
+        ),
+        (
+            vec!["add", &up.url(), "--tag", "v9.9.9", "--name", "other"],
+            "has no tag",
+        ),
+        (
+            vec!["add", &up.url(), "--branch", "nope", "--name", "other"],
+            "has no branch",
+        ),
+    ] {
+        let result = run(dir, &args);
+        assert_eq!(result.code, 1, "{args:?} should fail");
+        assert!(result.stderr.contains(needle), "{}", result.stderr);
+        assert_eq!(manifest(dir), before, "{args:?} must not write");
+    }
+}
+
+#[test]
+fn add_refuses_a_path_outside_the_clone_directory() {
+    let up = upstream("escape-add");
+    let scratch = repo("add-escape");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+
+    for path in ["../../evil", "/tmp/evil", "elsewhere/evil"] {
+        let result = run(
+            dir,
+            &[
+                "add",
+                &up.url(),
+                "--tag",
+                "v1.0.0",
+                "--name",
+                "up",
+                "--path",
+                path,
+            ],
+        );
+        assert_eq!(result.code, 1, "{path} should be refused");
+        assert!(!dir.join("repos").join("up").exists());
+    }
+}
+
+#[test]
+fn add_before_init_says_so() {
+    let up = upstream("noinit");
+    let scratch = repo("add-noinit");
+
+    let result = run(&scratch.path, &["add", &up.url(), "--tag", "v1.0.0"]);
+    assert_eq!(result.code, 1);
+    assert!(
+        result.stderr.contains("agent-repos init"),
+        "{}",
+        result.stderr
+    );
+}
+
+#[test]
+fn restore_reproduces_every_pinned_checkout() {
+    let up = upstream("restore");
+    let scratch = repo("restore");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(
+        dir,
+        &["add", &up.url(), "--tag", "v1.0.0", "--name", "tagged"],
+    );
+    run(dir, &["add", &up.url(), "--name", "pinned"]);
+
+    let expected = manifest(dir);
+
+    // This is the fresh-clone path: repos/ is gitignored, so a teammate has
+    // nothing until restore runs.
+    fs::remove_dir_all(dir.join("repos")).unwrap();
+
+    let result = run(dir, &["restore"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+
+    assert_eq!(
+        fs::read_to_string(dir.join("repos").join("tagged").join("lib.txt")).unwrap(),
+        "v1\n"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("repos").join("pinned").join("lib.txt")).unwrap(),
+        "v2\n"
+    );
+    assert_eq!(manifest(dir), expected, "restore must not rewrite the pins");
+
+    // Running it again is a no-op.
+    let again = run(dir, &["restore"]);
+    assert_eq!(again.code, 0);
+    assert!(again.stderr.contains("already present"), "{}", again.stderr);
+}
+
 #[test]
 fn commands_outside_a_git_repository_fail_cleanly() {
     let scratch = Scratch::new("no-git");

@@ -37,7 +37,7 @@ Commands:
   update  [<name>...] [--all] [--to REF] [--latest] [--yes]
       Re-check a pin, move it to REF, or advance it to the latest.
 
-  restore [--all]
+  restore
       Clone any manifest entry missing from disk, at its pinned ref.
 
   remove  <name> [--keep-files] [--yes]
@@ -141,16 +141,7 @@ fn exactly_one(command: &str, what: &str, rest: Vec<String>) -> Result<String> {
     }
 }
 
-/// Which ref an entry is pinned to. Never inferred from a package manifest or
-/// lockfile — the user says so explicitly, or the default branch's current
-/// head commit is pinned.
-#[derive(Debug, PartialEq, Eq)]
-enum RefSpec {
-    Tag(String),
-    Branch(String),
-    Commit(String),
-    DefaultHead,
-}
+use repo::RefSpec;
 
 fn ref_spec(parser: &mut Parser) -> Result<RefSpec> {
     let tag = parser.value("tag", None)?;
@@ -198,18 +189,6 @@ fn init(argv: Vec<String>) -> Result<()> {
     repo::init(dir, targets, no_instructions)
 }
 
-#[derive(Debug)]
-#[expect(dead_code, reason = "reported via Debug until the command lands")]
-struct AddOptions {
-    url: String,
-    ref_spec: RefSpec,
-    name: Option<String>,
-    path: Option<String>,
-    desc: Option<String>,
-    usage: Option<String>,
-    no_sync: bool,
-}
-
 fn add(argv: Vec<String>) -> Result<()> {
     let mut parser = Parser::new(argv);
     let ref_spec = ref_spec(&mut parser)?;
@@ -220,18 +199,7 @@ fn add(argv: Vec<String>) -> Result<()> {
     let no_sync = parser.flag("no-sync", None)?;
     let url = exactly_one("add", "url", parser.finish()?)?;
 
-    stub(
-        "add",
-        &AddOptions {
-            url,
-            ref_spec,
-            name,
-            path,
-            desc,
-            usage,
-            no_sync,
-        },
-    )
+    repo::add(url, ref_spec, name, path, desc, usage, no_sync)
 }
 
 #[derive(Debug)]
@@ -278,19 +246,11 @@ fn update(argv: Vec<String>) -> Result<()> {
     )
 }
 
-#[derive(Debug)]
-#[expect(dead_code, reason = "reported via Debug until the command lands")]
-struct RestoreOptions {
-    all: bool,
-}
-
 fn restore(argv: Vec<String>) -> Result<()> {
-    let mut parser = Parser::new(argv);
-    let options = RestoreOptions {
-        all: parser.flag("all", Some('a'))?,
-    };
+    let parser = Parser::new(argv);
     no_positionals("restore", &parser.finish()?)?;
-    stub("restore", &options)
+
+    repo::restore()
 }
 
 #[derive(Debug)]
@@ -447,18 +407,15 @@ mod tests {
         }
     }
 
-    /// `init` and `list` are deliberately absent: they now touch the
-    /// filesystem, so exercising them belongs in the integration tests where
-    /// there is a scratch repository to work in. Running them here would write
-    /// into the checkout the tests are running from.
+    /// Implemented commands are deliberately absent: they touch the filesystem
+    /// and the network, so exercising them belongs in the integration tests
+    /// where there is a scratch repository to work in. Running them here would
+    /// write into the checkout the tests are running from.
     #[test]
     fn unimplemented_commands_parse_and_report() {
         let commands = [
-            vec!["add", "https://example.com/o/r"],
-            vec!["add", "https://example.com/o/r", "--tag", "v1.0.0"],
             vec!["update", "--all"],
             vec!["update", "effect"],
-            vec!["restore"],
             vec!["remove", "effect", "--yes"],
             vec!["status"],
             vec!["pin", "effect"],

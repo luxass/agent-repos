@@ -4,11 +4,22 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::manifest::{DEFAULT_DIR, DEFAULT_TARGET, Manifest};
+use crate::manifest::{DEFAULT_DIR, DEFAULT_TARGET, Kind, Manifest, Repo};
 use crate::{fsx, git, paths, ui};
 
 /// Files that are treated as agent instructions when none are configured.
 const KNOWN_TARGETS: &[&str] = &["AGENTS.md", "CLAUDE.md", "AGENT.md"];
+
+/// Which ref an entry should be pinned to. Never inferred from a package
+/// manifest or lockfile: either the user says so, or the default branch's
+/// current head commit is pinned and printed.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RefSpec {
+    Tag(String),
+    Branch(String),
+    Commit(String),
+    DefaultHead,
+}
 
 pub(crate) fn init(dir: Option<String>, targets: Vec<String>, no_instructions: bool) -> Result<()> {
     let root = git::root()?;
@@ -106,6 +117,203 @@ fn ensure_gitignore(root: &Path, entry: &str) -> Result<bool> {
 
     fsx::write_atomic(&file, &next)?;
     Ok(true)
+}
+
+/// Derives an entry name from a clone URL: the last path segment, with any
+/// `.git` suffix and trailing slash removed.
+fn name_from_url(url: &str) -> Result<String> {
+    let trimmed = url.trim_end_matches('/');
+    let trimmed = trimmed.strip_suffix(".git").unwrap_or(trimmed);
+
+    // Handle scp-style remotes (git@host:owner/repo) as well as URLs.
+    let base = trimmed
+        .rsplit(['/', ':'])
+        .next()
+        .filter(|segment| !segment.is_empty());
+
+    base.map(str::to_string).ok_or_else(|| {
+        Error::failure(format!(
+            "could not work out a name from {url}; pass --name explicitly"
+        ))
+    })
+}
+
+pub(crate) fn add(
+    url: String,
+    ref_spec: RefSpec,
+    name: Option<String>,
+    path: Option<String>,
+    desc: Option<String>,
+    usage: Option<String>,
+    _no_sync: bool,
+) -> Result<()> {
+    let root = git::root()?;
+    let mut manifest = Manifest::load(&root)?;
+
+    let name = match name {
+        Some(name) => name,
+        None => name_from_url(&url)?,
+    };
+    if name.contains(['/', '\\', '\n', '\t']) {
+        return Err(Error::failure(format!(
+            "name must not contain path separators or control characters: {name:?}"
+        )));
+    }
+
+    let path = path.unwrap_or_else(|| format!("{}/{name}", manifest.dir));
+    paths::validate_relative("path", &path)?;
+    if !paths::is_inside(&manifest.dir, &path) {
+        return Err(Error::failure(format!(
+            "path {path} is outside the clone directory {}/",
+            manifest.dir
+        )));
+    }
+
+    if let Some(existing) = manifest.repos.iter().find(|repo| repo.name == name) {
+        return Err(Error::failure(format!(
+            "`{name}` is already configured at {}. Use `agent-repos update {name} --to <ref>` \
+             to repoint it.",
+            existing.path
+        )));
+    }
+    if let Some(existing) = manifest.repos.iter().find(|repo| repo.path == path) {
+        return Err(Error::failure(format!(
+            "{path} is already used by `{}`",
+            existing.name
+        )));
+    }
+
+    let dest = root.join(&path);
+    if dest.exists() {
+        return Err(Error::failure(format!("{path} already exists")));
+    }
+
+    // Resolve the pin before cloning, so a typo in a tag fails fast with a
+    // message about the tag rather than a wall of git output.
+    let (kind, git_ref, track) = match ref_spec {
+        RefSpec::Tag(tag) => {
+            git::remote_sha(&url, &format!("refs/tags/{tag}"))
+                .map_err(|_| Error::failure(format!("{url} has no tag `{tag}`")))?;
+            (Kind::Tag, tag, None)
+        }
+        RefSpec::Branch(branch) => {
+            git::remote_sha(&url, &format!("refs/heads/{branch}"))
+                .map_err(|_| Error::failure(format!("{url} has no branch `{branch}`")))?;
+            (Kind::Branch, branch, None)
+        }
+        RefSpec::Commit(sha) => (Kind::Commit, sha, None),
+        RefSpec::DefaultHead => {
+            let head = git::remote_default(&url)?;
+            ui::log(&format!(
+                "pinning {} at {} (head of {})",
+                name,
+                short(&head.sha),
+                head.branch
+            ));
+            (Kind::Commit, head.sha, Some(head.branch))
+        }
+    };
+
+    checkout(&url, &kind, &git_ref, track.as_deref(), &dest)?;
+
+    manifest.repos.push(Repo {
+        name: name.clone(),
+        url,
+        git_ref: git_ref.clone(),
+        kind,
+        path: path.clone(),
+        track,
+        desc,
+        usage,
+        comments: Vec::new(),
+    });
+    manifest.save(&root)?;
+
+    ui::log(&format!(
+        "added {name} at {path} ({} {})",
+        kind.as_str(),
+        short(&git_ref)
+    ));
+    Ok(())
+}
+
+/// Clones at the pinned ref, cleaning up a partial directory on failure so a
+/// retry is not blocked by leftovers.
+fn checkout(url: &str, kind: &Kind, git_ref: &str, track: Option<&str>, dest: &Path) -> Result<()> {
+    let result = match kind {
+        Kind::Tag | Kind::Branch => git::clone_ref(url, git_ref, dest),
+        Kind::Commit => git::clone_commit(url, git_ref, track, dest),
+    };
+
+    if result.is_err() && dest.exists() {
+        let _ = fs::remove_dir_all(dest);
+    }
+    result
+}
+
+/// Shortens a 40-character sha for display, leaving other refs alone.
+fn short(git_ref: &str) -> String {
+    if git_ref.len() == 40 && git_ref.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        git_ref[..7].to_string()
+    } else {
+        git_ref.to_string()
+    }
+}
+
+pub(crate) fn restore() -> Result<()> {
+    let root = git::root()?;
+    let manifest = Manifest::load(&root)?;
+
+    if manifest.repos.is_empty() {
+        ui::log("no reference repositories configured");
+        return Ok(());
+    }
+
+    let mut restored = 0usize;
+    let mut failed = 0usize;
+
+    for repo in &manifest.repos {
+        let dest = root.join(&repo.path);
+        if dest.exists() {
+            continue;
+        }
+
+        ui::log(&format!(
+            "restoring {} at {} {}",
+            repo.name,
+            repo.kind.as_str(),
+            short(&repo.git_ref)
+        ));
+
+        match checkout(
+            &repo.url,
+            &repo.kind,
+            &repo.git_ref,
+            repo.track.as_deref(),
+            &dest,
+        ) {
+            Ok(()) => restored += 1,
+            Err(err) => {
+                // One bad entry should not stop the rest from being restored.
+                ui::error(&format!("{}: {err}", repo.name));
+                failed += 1;
+            }
+        }
+    }
+
+    if restored == 0 && failed == 0 {
+        ui::log("everything is already present");
+    } else {
+        ui::log(&format!("restored {restored} of {}", manifest.repos.len()));
+    }
+
+    if failed > 0 {
+        return Err(Error::failure(format!(
+            "{failed} repositor{} could not be restored",
+            if failed == 1 { "y" } else { "ies" }
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn list(json: bool) -> Result<()> {
