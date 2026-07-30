@@ -11,8 +11,6 @@ pub(crate) enum ExitCode {
     /// The command line itself was wrong: unknown option, missing value,
     /// mutually exclusive flags.
     Usage = 2,
-    /// Scaffolding only, until the command lands.
-    Unimplemented = 3,
 }
 
 #[derive(Debug)]
@@ -33,13 +31,6 @@ impl Error {
         Self {
             message: message.into(),
             code: ExitCode::Usage,
-        }
-    }
-
-    pub(crate) fn unimplemented(command: &str) -> Self {
-        Self {
-            message: format!("`{command}` is not implemented yet"),
-            code: ExitCode::Unimplemented,
         }
     }
 

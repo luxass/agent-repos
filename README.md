@@ -18,10 +18,6 @@ agent-repos add https://github.com/Effect-TS/effect --tag v3.12.0 \
 That records the pin in `.agent-repos`, clones the tag into `repos/effect`, and
 refreshes the generated block in your `AGENTS.md`.
 
-> **Status:** early. The CLI surface is scaffolded — every command parses and
-> validates its flags — but the operations themselves are still landing. See
-> [Status](#status).
-
 ## Why
 
 - **Pinned, never guessed.** Every entry records a tag, branch or commit. The
@@ -33,7 +29,7 @@ refreshes the generated block in your `AGENTS.md`.
 - **Your agent instructions stay current.** `AGENTS.md` and `CLAUDE.md` carry
   comment-delimited blocks that `agent-repos sync` refills from the manifest —
   including *why* each repo is there and what to consult it for.
-- **Tiny and static.** Around 300 KB, no dependencies, fully static on Linux.
+- **Tiny and static.** Under 600 KB, no dependencies, fully static on Linux.
 
 ## Install
 
@@ -52,7 +48,7 @@ agent-repos init    [--dir DIR] [--target FILE]... [--no-instructions]
 agent-repos add     <url> [--tag T | --branch B | --commit SHA]
                           [--name N] [--path P] [--desc TEXT] [--use TEXT] [--no-sync]
 agent-repos update  [<name>...] [--all] [--to REF] [--latest] [--yes]
-agent-repos restore [--all]
+agent-repos restore
 agent-repos remove  <name> [--keep-files] [--yes]
 agent-repos list    [--json]
 agent-repos status
@@ -141,22 +137,22 @@ cargo build --release --target aarch64-unknown-linux-musl
 
 | Target | Size | Linkage |
 | --- | --- | --- |
-| `aarch64-apple-darwin` | ~303 KB | libSystem dynamic (unavoidable on macOS) |
-| `x86_64-unknown-linux-musl` | ~403 KB | static-pie |
-| `aarch64-unknown-linux-musl` | ~361 KB | fully static |
+| `aarch64-apple-darwin` | ~421 KB | libSystem dynamic (unavoidable on macOS) |
+| `aarch64-unknown-linux-musl` | ~494 KB | fully static |
+| `x86_64-unknown-linux-musl` | ~563 KB | static-pie |
 
-CI fails the build if any binary exceeds 512 KB.
+Most of that is `std` itself: a hello-world with the same profile already costs
+~426 KB on x86_64-musl, because `std` links the backtrace machinery whether or
+not the program ever panics. agent-repos adds roughly 137 KB on top of that.
+CI fails the build if any binary exceeds 640 KB.
 
-## Status
+## Exit codes
 
-Implemented:
-
-- Full command surface, argument parsing and validation, help and `--version`
-- Exit codes: `0` success, `2` usage error, `3` not yet implemented
-
-Landing next, in order: the manifest parser and git wrappers, then `init` and
-`add`; then `update`, `restore`, `remove` and `pin`; then `sync`, `status`,
-`list --json`, shell completions and release packaging.
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | Could not be carried out: bad manifest, git failure, unknown entry. Also `sync --check` when a file is out of date |
+| 2 | Usage error: unknown option, missing value, mutually exclusive flags |
 
 Contributor notes and project invariants live in [AGENTS.md](AGENTS.md).
 

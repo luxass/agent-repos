@@ -14,7 +14,7 @@ enforced somewhere, and each exists for a stated reason.
 | Invariant | Enforced by | Why |
 | --- | --- | --- |
 | No dependencies. `std` only. | Empty `[dependencies]`, CI size guard | `clap` alone costs more than the rest of the binary |
-| Binary stays under 512 KB | Size guard in `.github/workflows/ci.yml` | The reason the project exists |
+| Binary stays under 640 KB | Size guard in `.github/workflows/ci.yml` | The reason the project exists — see SIZE below |
 | No `unsafe` | `unsafe_code = "forbid"` in `Cargo.toml` | Nothing here needs it |
 | Shell out to `git`, never link a git library | Code review | `gix` would add 5-8 MB and mean reimplementing credential handling. Spawning `git` inherits SSH keys, credential helpers, proxies, `GH_TOKEN` and git-lfs for free |
 | No C dependencies and no `build.rs` | Code review | This is what lets musl targets cross-compile from any host with no zig, Docker or musl-gcc |
@@ -24,21 +24,54 @@ enforced somewhere, and each exists for a stated reason.
 If a change pushes the binary over the limit, do not raise the limit. Work out
 what pulled the weight in and remove it.
 
+## SIZE
+
+Measured with the release profile, `x86_64-unknown-linux-musl` being the
+largest target:
+
+| | Bytes |
+| --- | --- |
+| hello-world using only args, `Command` and `fs` | ~426,000 |
+| agent-repos, complete | ~563,000 |
+| Guard | 655,360 |
+
+The floor is not our code. `std` links the backtrace machinery — `gimli`,
+`addr2line`, `miniz_oxide`, `libunwind`, `rustc_demangle` — whether or not the
+program ever panics, and `panic = "abort"` does not remove it. Everything
+agent-repos does adds roughly 137 KB on top.
+
+That floor is only escapable with `-Z build-std` plus `panic_immediate_abort`,
+which is nightly-only and would break the pinned stable toolchain. If that
+trade ever looks worthwhile it is a deliberate decision, not a quiet one.
+
+So the guard exists to catch **our** growth, not to chase the floor. Roughly
+80 KB of headroom. If a change eats into it, find out what did:
+
+```sh
+cargo build --release --target x86_64-unknown-linux-musl \
+  --config 'profile.release.strip="none"'
+nm --print-size --size-sort --radix=d \
+  target/x86_64-unknown-linux-musl/release/agent-repos | tail -25
+```
+
 ## STRUCTURE
 
 ```text
 agent-repos/
 |-- src/
-|   |-- main.rs           # Command dispatch, option structs, exit codes
+|   |-- main.rs           # Command dispatch and exit codes
 |   |-- args.rs           # Hand-rolled argument parser
 |   |-- error.rs          # Error type and ExitCode
-|   |-- ui.rs             # stderr logging, colour detection
-|   |-- manifest.rs       # (planned) .agent-repos TOML subset parse/write
-|   |-- git.rs            # (planned) std::process::Command wrappers
-|   |-- repo.rs           # (planned) add/update/remove/restore/pin
-|   |-- sync.rs           # (planned) AGENTS.md block scan and rewrite
-|   `-- paths.rs          # (planned) relative-path validation, containment
-|-- tests/cli.rs          # (planned) integration tests over local bare repos
+|   |-- ui.rs             # stderr logging, colour, confirmation prompts
+|   |-- manifest.rs       # .agent-repos TOML subset parse/write
+|   |-- git.rs            # std::process::Command wrappers around git
+|   |-- repo.rs           # init/add/update/remove/restore/pin/status/list
+|   |-- sync.rs           # AGENTS.md block scanning and rewriting
+|   |-- render.rs         # Block body generation
+|   |-- completions.rs    # fish/bash/zsh completion scripts
+|   |-- paths.rs          # Relative-path validation, containment
+|   `-- fsx.rs            # Atomic writes
+|-- tests/cli.rs          # Integration tests over local git fixtures
 |-- .cargo/config.toml    # musl targets link via bundled rust-lld
 |-- rust-toolchain.toml   # Compiler pinned to 1.96.1
 |-- Cargo.lock            # Committed; this is a binary
@@ -49,10 +82,14 @@ agent-repos/
 
 | Task | Location |
 | --- | --- |
-| Add a command or flag | `src/main.rs`, then `HELP` in the same file |
+| Add a command or flag | `src/main.rs`, then `HELP` in the same file, then `src/completions.rs` |
 | Change argument parsing behaviour | `src/args.rs` |
 | Change an exit code | `src/error.rs` |
-| Change terminal output or colour rules | `src/ui.rs` |
+| Change terminal output, colour or prompts | `src/ui.rs` |
+| Change the manifest format | `src/manifest.rs` (bump `FORMAT_VERSION` if breaking) |
+| Change what a git operation does | `src/git.rs` |
+| Change command behaviour | `src/repo.rs` |
+| Add or change a generated block | `src/render.rs`, then the dispatch in `src/sync.rs` |
 | Change the size limit or CI steps | `.github/workflows/ci.yml` |
 | Change how musl links | `.cargo/config.toml` |
 | Bump the compiler | `rust-toolchain.toml` **and** `rust-version` in `Cargo.toml` |
@@ -60,7 +97,7 @@ agent-repos/
 ## COMMANDS
 
 ```sh
-cargo build --release                 # ~300 KB on macOS arm64
+cargo build --release                 # ~421 KB on macOS arm64
 cargo test --all
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
@@ -93,10 +130,8 @@ cargo build --release && ls -l target/release/agent-repos
 | Code | Meaning |
 | --- | --- |
 | 0 | Success |
+| 1 | The command could not be carried out: bad manifest, git failure, missing entry. Also `sync --check` when a file is out of date |
 | 2 | Usage error: unknown option, missing value, mutually exclusive flags |
-| 3 | Command not implemented yet (scaffolding; goes away as commands land) |
-
-`sync --check` will exit 1 on drift once it lands.
 
 ## PINNING
 
@@ -133,11 +168,20 @@ gh stack submit --open         # mark ready for review
 - `gh stack unstack` deletes the stack **on GitHub as well as locally**. Not a
   local cleanup tool.
 
+## TESTING
+
+Unit tests live beside the code they cover. Integration tests in `tests/cli.rs`
+drive the real binary against **local** git fixtures built with `git init` —
+never the network, so they work offline and in CI.
+
+When adding a command, cover the refusal paths too, not just the happy one.
+Most of the value in this tool is that it declines to do the wrong thing:
+deleting something that is not a checkout, moving a pin nobody asked to move,
+writing a file it could not fully render.
+
 ## STATUS
 
-The CLI surface is scaffolded: every command parses and validates its flags,
-then exits 3. The commands themselves land in later stacks — manifest and git
-operations, then update/sync, then status and release packaging.
-
-Once `sync` works, this file should grow its own `<!-- agent-repos:guidance -->`
-block and be maintained by the tool itself.
+Every command is implemented. This repository does not use `agent-repos` on
+itself — it has no external dependencies to vendor — so there are no
+`<!-- agent-repos:... -->` blocks in this file. See the README for what the
+generated blocks look like.

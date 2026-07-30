@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::manifest::{DEFAULT_DIR, DEFAULT_TARGET, Kind, Manifest, Repo};
-use crate::{fsx, git, paths, ui};
+use crate::{fsx, git, paths, sync, ui};
 
 /// Files that are treated as agent instructions when none are configured.
 const KNOWN_TARGETS: &[&str] = &["AGENTS.md", "CLAUDE.md", "AGENT.md"];
@@ -138,6 +138,21 @@ fn name_from_url(url: &str) -> Result<String> {
     })
 }
 
+/// Refreshes the generated instruction blocks after the manifest changes.
+///
+/// A problem in a target file — an unknown block, say — must not undo work
+/// that already succeeded, so this reports and carries on rather than failing
+/// the command. The manifest is already saved; `agent-repos sync` will pick it
+/// up once the file is fixed.
+fn auto_sync(root: &Path, manifest: &Manifest) {
+    if manifest.targets.is_empty() {
+        return;
+    }
+    if let Err(err) = sync::apply(root, manifest, &manifest.targets, false, true) {
+        ui::error(&format!("could not refresh instruction files: {err}"));
+    }
+}
+
 pub(crate) fn add(
     url: String,
     ref_spec: RefSpec,
@@ -145,7 +160,7 @@ pub(crate) fn add(
     path: Option<String>,
     desc: Option<String>,
     usage: Option<String>,
-    _no_sync: bool,
+    no_sync: bool,
 ) -> Result<()> {
     let root = git::root()?;
     let mut manifest = Manifest::load(&root)?;
@@ -228,6 +243,10 @@ pub(crate) fn add(
         comments: Vec::new(),
     });
     manifest.save(&root)?;
+
+    if !no_sync {
+        auto_sync(&root, &manifest);
+    }
 
     ui::log(&format!(
         "added {name} at {path} ({} {})",
@@ -464,6 +483,8 @@ pub(crate) fn pin(name: String) -> Result<()> {
     repo.git_ref = head.clone();
 
     manifest.save(&root)?;
+    auto_sync(&root, &manifest);
+
     ui::log(&format!(
         "pinned {name} to {} (was {})",
         short(&head),
@@ -495,6 +516,7 @@ pub(crate) fn remove(name: String, keep_files: bool, yes: bool) -> Result<()> {
 
     manifest.repos.remove(index);
     manifest.save(&root)?;
+    auto_sync(&root, &manifest);
 
     if let Some(resolved) = resolved {
         fs::remove_dir_all(&resolved)
@@ -584,6 +606,7 @@ pub(crate) fn update(
 
     if changed {
         manifest.save(&root)?;
+        auto_sync(&root, &manifest);
     }
     Ok(())
 }

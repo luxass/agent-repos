@@ -6,12 +6,15 @@
 //! user's SSH keys, credential helpers, proxies and git-lfs for free.
 
 mod args;
+mod completions;
 mod error;
 mod fsx;
 mod git;
 mod manifest;
 mod paths;
+mod render;
 mod repo;
+mod sync;
 mod ui;
 
 use args::Parser;
@@ -102,19 +105,6 @@ fn run(argv: Vec<String>) -> Result<()> {
             "unknown command `{other}` (try `agent-repos help`)"
         ))),
     }
-}
-
-/// Until a command lands, report what was parsed and exit non-zero. This keeps
-/// the whole surface exercisable — and testable — before any of it does work.
-///
-/// The option structs below carry `#[expect(dead_code)]` because their fields
-/// are only read through `Debug` here, which dead-code analysis deliberately
-/// ignores. `expect` rather than `allow`, so each one starts warning the
-/// moment the command that consumes it lands and the attribute gets removed
-/// rather than lingering.
-fn stub(command: &str, options: &dyn std::fmt::Debug) -> Result<()> {
-    ui::log(&format!("parsed {command}: {options:?}"));
-    Err(Error::unimplemented(command))
 }
 
 fn no_positionals(command: &str, rest: &[String]) -> Result<()> {
@@ -265,34 +255,28 @@ fn pin(argv: Vec<String>) -> Result<()> {
     repo::pin(name)
 }
 
-#[derive(Debug)]
-#[expect(dead_code, reason = "reported via Debug until the command lands")]
-struct SyncOptions {
-    targets: Vec<String>,
-    check: bool,
-}
-
 fn sync(argv: Vec<String>) -> Result<()> {
     let mut parser = Parser::new(argv);
-    let options = SyncOptions {
-        targets: parser.values("target", None)?,
-        check: parser.flag("check", None)?,
-    };
+    let targets = parser.values("target", None)?;
+    let check = parser.flag("check", None)?;
     no_positionals("sync", &parser.finish()?)?;
-    stub("sync", &options)
-}
 
-#[derive(Debug)]
-#[expect(dead_code, reason = "reported via Debug until the command lands")]
-struct CompletionsOptions {
-    shell: Shell,
+    sync::sync(targets, check)
 }
 
 fn completions(argv: Vec<String>) -> Result<()> {
     let parser = Parser::new(argv);
     let shell = exactly_one("completions", "shell", parser.finish()?)?;
-    let shell = Shell::parse(&shell)?;
-    stub("completions", &CompletionsOptions { shell })
+
+    print!(
+        "{}",
+        match Shell::parse(&shell)? {
+            Shell::Fish => completions::fish(),
+            Shell::Bash => completions::bash(),
+            Shell::Zsh => completions::zsh(),
+        }
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -363,21 +347,6 @@ mod tests {
             vec!["-V"],
         ] {
             assert!(run(argv(&command)).is_ok(), "{command:?} should succeed");
-        }
-    }
-
-    /// Implemented commands are deliberately absent: they touch the filesystem
-    /// and the network, so exercising them belongs in the integration tests
-    /// where there is a scratch repository to work in. Running them here would
-    /// write into the checkout the tests are running from.
-    #[test]
-    fn unimplemented_commands_parse_and_report() {
-        let commands = [vec!["sync", "--check"], vec!["completions", "fish"]];
-
-        for command in commands {
-            let err = run(argv(&command)).unwrap_err();
-            assert_eq!(err.code(), 3, "{command:?} should reach its stub");
-            assert!(err.to_string().contains("not implemented yet"));
         }
     }
 

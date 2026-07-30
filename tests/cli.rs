@@ -876,6 +876,235 @@ fn commands_naming_an_unknown_entry_say_so() {
     }
 }
 
+fn agents_md(dir: &Path) -> String {
+    fs::read_to_string(dir.join("AGENTS.md")).expect("AGENTS.md should exist")
+}
+
+#[test]
+fn sync_fills_blocks_and_leaves_prose_alone() {
+    let up = upstream("sync");
+    let scratch = repo("sync");
+    let dir = &scratch.path;
+    fs::write(dir.join("AGENTS.md"), "# My Service\n\nExisting prose.\n").unwrap();
+    run(dir, &["init"]);
+    run(
+        dir,
+        &[
+            "add",
+            &up.url(),
+            "--tag",
+            "v1.0.0",
+            "--name",
+            "effect",
+            "--desc",
+            "Effect runtime",
+        ],
+    );
+
+    let text = agents_md(dir);
+    assert!(text.starts_with("# My Service\n\nExisting prose.\n"));
+    assert!(text.contains("<!-- agent-repos:guidance -->"));
+    assert!(text.contains("| effect | v1.0.0 | repos/effect | Effect runtime |"));
+}
+
+#[test]
+fn sync_is_idempotent_and_check_agrees() {
+    let up = upstream("sync-idem");
+    let scratch = repo("sync-idem");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+
+    run(dir, &["sync"]);
+    let once = agents_md(dir);
+    run(dir, &["sync"]);
+    assert_eq!(
+        once,
+        agents_md(dir),
+        "sync must be byte-identical on a rerun"
+    );
+
+    let check = run(dir, &["sync", "--check"]);
+    assert_eq!(check.code, 0, "stderr: {}", check.stderr);
+}
+
+#[test]
+fn sync_check_exits_one_when_a_block_is_stale() {
+    let up = upstream("sync-drift");
+    let scratch = repo("sync-drift");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+
+    let tampered = agents_md(dir).replace("repos/up", "somewhere-else");
+    fs::write(dir.join("AGENTS.md"), &tampered).unwrap();
+
+    let check = run(dir, &["sync", "--check"]);
+    assert_eq!(check.code, 1);
+    assert!(check.stderr.contains("out of date"), "{}", check.stderr);
+    assert_eq!(agents_md(dir), tampered, "--check must not write anything");
+
+    // And a real sync fixes it.
+    assert_eq!(run(dir, &["sync"]).code, 0);
+    assert_eq!(run(dir, &["sync", "--check"]).code, 0);
+}
+
+#[test]
+fn every_block_type_renders() {
+    let up = upstream("sync-blocks");
+    let scratch = repo("sync-blocks");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(
+        dir,
+        &[
+            "add",
+            &up.url(),
+            "--tag",
+            "v1.0.0",
+            "--name",
+            "effect",
+            "--desc",
+            "runtime",
+            "--use",
+            "API shapes",
+        ],
+    );
+
+    fs::write(
+        dir.join("AGENTS.md"),
+        "<!-- agent-repos:repos fields=name,ref,url format=list -->\n\
+         <!-- /agent-repos:repos -->\n\n\
+         <!-- agent-repos:repo name=effect -->\n\
+         <!-- /agent-repos:repo -->\n\n\
+         <!-- agent-repos:paths -->\n\
+         <!-- /agent-repos:paths -->\n",
+    )
+    .unwrap();
+
+    let result = run(dir, &["sync"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+
+    let text = agents_md(dir);
+    assert!(text.contains("- **effect** — Version: v1.0.0"), "{text}");
+    assert!(
+        text.contains("**effect** — pinned to `v1.0.0` (tag)"),
+        "{text}"
+    );
+    assert!(text.contains("Consult for: API shapes"), "{text}");
+    assert!(
+        text.lines().any(|line| line == "repos/effect"),
+        "paths block: {text}"
+    );
+}
+
+#[test]
+fn a_malformed_block_is_reported_and_the_file_is_untouched() {
+    let scratch = repo("sync-bad");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+
+    for (content, needle) in [
+        (
+            "<!-- agent-repos:bogus -->\n<!-- /agent-repos:bogus -->\n",
+            "unknown block `bogus`",
+        ),
+        ("prose\n<!-- agent-repos:repos -->\n", "never closed"),
+        (
+            "<!-- agent-repos:repos fields=nope -->\n<!-- /agent-repos:repos -->\n",
+            "unknown field `nope`",
+        ),
+        (
+            "<!-- agent-repos:repo name=absent -->\n<!-- /agent-repos:repo -->\n",
+            "no entry named `absent`",
+        ),
+    ] {
+        fs::write(dir.join("AGENTS.md"), content).unwrap();
+
+        let result = run(dir, &["sync"]);
+        assert_eq!(result.code, 1, "{content:?}");
+        assert!(result.stderr.contains(needle), "{}", result.stderr);
+        assert_eq!(agents_md(dir), content, "the file must be left as it was");
+    }
+}
+
+#[test]
+fn sync_follows_the_configured_targets() {
+    let scratch = repo("sync-targets");
+    let dir = &scratch.path;
+    run(
+        dir,
+        &["init", "--target", "AGENTS.md", "--target=CLAUDE.md"],
+    );
+
+    assert_eq!(run(dir, &["sync"]).code, 0);
+    assert!(dir.join("AGENTS.md").exists());
+    assert!(dir.join("CLAUDE.md").exists());
+    assert!(agents_md(dir).contains("Agent reference repositories"));
+}
+
+#[test]
+fn no_sync_leaves_instruction_files_alone() {
+    let up = upstream("no-sync");
+    let scratch = repo("no-sync");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+
+    let result = run(
+        dir,
+        &[
+            "add",
+            &up.url(),
+            "--tag",
+            "v1.0.0",
+            "--name",
+            "up",
+            "--no-sync",
+        ],
+    );
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(
+        !dir.join("AGENTS.md").exists(),
+        "--no-sync should not have written AGENTS.md"
+    );
+}
+
+#[test]
+fn removing_an_entry_updates_the_generated_table() {
+    let up = upstream("sync-remove");
+    let scratch = repo("sync-remove");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+    assert!(agents_md(dir).contains("repos/up"));
+
+    run(dir, &["remove", "up", "--yes"]);
+    let text = agents_md(dir);
+    assert!(!text.contains("repos/up"), "{text}");
+    assert!(
+        text.contains("No reference repositories configured"),
+        "{text}"
+    );
+}
+
+#[test]
+fn completions_are_emitted_for_every_shell() {
+    let scratch = repo("completions");
+    let dir = &scratch.path;
+
+    for shell in ["fish", "bash", "zsh"] {
+        let result = run(dir, &["completions", shell]);
+        assert_eq!(result.code, 0, "{shell}: {}", result.stderr);
+        assert!(result.stdout.contains("agent-repos"), "{shell}");
+        assert!(result.stdout.lines().count() > 10, "{shell}");
+        // Machine-readable output belongs on stdout.
+        assert!(result.stderr.is_empty(), "{shell}: {}", result.stderr);
+    }
+
+    let result = run(dir, &["completions", "nushell"]);
+    assert_eq!(result.code, 2);
+}
+
 #[test]
 fn commands_outside_a_git_repository_fail_cleanly() {
     let scratch = Scratch::new("no-git");
