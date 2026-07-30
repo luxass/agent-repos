@@ -6,10 +6,10 @@
 //! the whole surface testable without a repository to run against.
 
 use crate::args::Parser;
+use crate::commands::{AddRequest, RefSpec, UpdateRequest};
 use crate::error::{Error, Result};
-use crate::repo::{AddRequest, RefSpec, UpdateRequest};
 use crate::sync::SyncMode;
-use crate::{completions, repo, sync};
+use crate::{commands, completions, sync};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -145,7 +145,7 @@ fn init(argv: Vec<String>) -> Result<()> {
     let no_instructions = parser.flag("no-instructions", None)?;
     no_positionals("init", &parser.finish()?)?;
 
-    repo::init(dir, targets, no_instructions)
+    commands::init(dir, targets, no_instructions)
 }
 
 fn add(argv: Vec<String>) -> Result<()> {
@@ -158,7 +158,7 @@ fn add(argv: Vec<String>) -> Result<()> {
     let no_sync = parser.flag("no-sync", None)?;
     let url = exactly_one("add", "url", parser.finish()?)?;
 
-    repo::add(AddRequest {
+    commands::add(AddRequest {
         url,
         ref_spec,
         name,
@@ -191,7 +191,7 @@ fn update(argv: Vec<String>) -> Result<()> {
         return Err(Error::usage("--to and --latest are mutually exclusive"));
     }
 
-    repo::update(UpdateRequest {
+    commands::update(UpdateRequest {
         names,
         all,
         to,
@@ -204,7 +204,7 @@ fn restore(argv: Vec<String>) -> Result<()> {
     let parser = Parser::new(argv);
     no_positionals("restore", &parser.finish()?)?;
 
-    repo::restore()
+    commands::restore()
 }
 
 fn remove(argv: Vec<String>) -> Result<()> {
@@ -213,7 +213,7 @@ fn remove(argv: Vec<String>) -> Result<()> {
     let yes = parser.flag("yes", Some('y'))?;
     let name = exactly_one("remove", "name", parser.finish()?)?;
 
-    repo::remove(name, keep_files, yes)
+    commands::remove(name, keep_files, yes)
 }
 
 fn list(argv: Vec<String>) -> Result<()> {
@@ -221,21 +221,21 @@ fn list(argv: Vec<String>) -> Result<()> {
     let json = parser.flag("json", None)?;
     no_positionals("list", &parser.finish()?)?;
 
-    repo::list(json)
+    commands::list(json)
 }
 
 fn status(argv: Vec<String>) -> Result<()> {
     let parser = Parser::new(argv);
     no_positionals("status", &parser.finish()?)?;
 
-    repo::status()
+    commands::status()
 }
 
 fn pin(argv: Vec<String>) -> Result<()> {
     let parser = Parser::new(argv);
     let name = exactly_one("pin", "name", parser.finish()?)?;
 
-    repo::pin(name)
+    commands::pin(name)
 }
 
 fn sync_command(argv: Vec<String>) -> Result<()> {

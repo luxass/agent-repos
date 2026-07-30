@@ -64,11 +64,16 @@ agent-repos/
 |   |-- args.rs           # Hand-rolled argument parser
 |   |-- error.rs          # Error type and ExitCode
 |   |-- ui.rs             # stderr logging, colour, confirmation prompts
+|   |-- commands/        # One module per command, matching the CLI surface
+|   |   |-- mod.rs        #   re-exports plus the few genuinely shared helpers
+|   |   `-- add.rs, init.rs, list.rs, pin.rs, remove.rs,
+|   |                     restore.rs, status.rs, update.rs
 |   |-- manifest.rs       # .agent-repos TOML subset parse/write
 |   |-- git.rs            # std::process::Command wrappers around git
-|   |-- repo.rs           # init/add/update/remove/restore/pin/status/list
 |   |-- sync.rs           # AGENTS.md block scanning and rewriting
-|   |-- render.rs         # Block body generation
+|   |-- render.rs         # Block body generation (markdown)
+|   |-- json.rs           # list --json output
+|   |-- version.rs        # Tag ordering for update --latest
 |   |-- completions.rs    # fish/bash/zsh completion scripts
 |   |-- paths.rs          # Relative-path validation, containment
 |   `-- fsx.rs            # Atomic writes
@@ -89,8 +94,11 @@ agent-repos/
 | Change terminal output, colour or prompts | `src/ui.rs` |
 | Change the manifest format | `src/manifest.rs` (bump `FORMAT_VERSION` if breaking) |
 | Change what a git operation does | `src/git.rs` |
-| Change command behaviour | `src/repo.rs` |
+| Change command behaviour | `src/commands/<command>.rs` |
+| Change something two commands share | `src/commands/mod.rs` — and only if two really do share it |
 | Add or change a generated block | `src/render.rs`, then the dispatch in `src/sync.rs` |
+| Change `list --json` | `src/json.rs` |
+| Change how `--latest` picks a tag | `src/version.rs` |
 | Change the size limit or CI steps | `.github/workflows/ci.yml` |
 | Change how musl links | `.cargo/config.toml` |
 | Bump the compiler | `rust-toolchain.toml` **and** `rust-version` in `Cargo.toml` |
@@ -126,8 +134,11 @@ cargo build --release && ls -l target/release/agent-repos
 - Do not add a helper before something calls it. An uncalled function fails
   `-D warnings`, and suppressing that costs more than waiting.
 - `main.rs` stays wiring only. Argument handling belongs in `cli.rs`, work
-  belongs in `repo.rs` or `sync.rs`. If you find yourself adding a `use` in the
-  middle of a file to make an edit fit, the edit is in the wrong file.
+  belongs in `src/commands/`. If you find yourself adding a `use` in the middle
+  of a file to make an edit fit, the edit is in the wrong file.
+- A new command is a new file in `src/commands/`, re-exported from its
+  `mod.rs`. Put a helper in `mod.rs` only once a second command needs it —
+  `mod.rs` is not a drawer.
 - More than two same-typed parameters in a row is a transposition waiting to
   happen — `AddRequest` and `UpdateRequest` exist for exactly that reason. Two
   booleans that cannot both be true want an enum, as `SyncMode` does.
