@@ -356,6 +356,10 @@ fn upstream(label: &str) -> Upstream {
     fs::write(dir.join("lib.txt"), "v2\n").unwrap();
     git(&dir, &["add", "-A"]);
     git(&dir, &["commit", "-qm", "second"]);
+    // v2.0.0 and v10.0.0 both sit here, so "pick the newest" has to order
+    // numerically: as strings, v2.0.0 would win.
+    git(&dir, &["tag", "v2.0.0"]);
+    git(&dir, &["tag", "v10.0.0"]);
     let head = String::from_utf8_lossy(&git(&dir, &["rev-parse", "HEAD"]).stdout)
         .trim()
         .to_string();
@@ -562,6 +566,314 @@ fn restore_reproduces_every_pinned_checkout() {
     let again = run(dir, &["restore"]);
     assert_eq!(again.code, 0);
     assert!(again.stderr.contains("already present"), "{}", again.stderr);
+}
+
+#[test]
+fn a_plain_update_never_moves_a_pin() {
+    let up = upstream("update-pinned");
+    let scratch = repo("update-pinned");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+
+    let before = manifest(dir);
+    let result = run(dir, &["update", "up"]);
+
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert_eq!(manifest(dir), before, "a plain update must not move a pin");
+    assert_eq!(
+        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        "v1\n"
+    );
+    assert!(result.stderr.contains("--latest"), "{}", result.stderr);
+}
+
+#[test]
+fn update_latest_picks_the_highest_version_not_the_highest_string() {
+    let up = upstream("update-latest");
+    let scratch = repo("update-latest");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+
+    let result = run(dir, &["update", "up", "--latest", "--yes"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+
+    assert!(
+        manifest(dir).contains("ref = \"v10.0.0\""),
+        "should choose v10.0.0 over v2.0.0"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        "v2\n"
+    );
+
+    // Running it again is a no-op.
+    let again = run(dir, &["update", "up", "--latest", "--yes"]);
+    assert!(again.stderr.contains("already at"), "{}", again.stderr);
+}
+
+#[test]
+fn update_to_repoints_and_reclassifies() {
+    let up = upstream("update-to");
+    let scratch = repo("update-to");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--tag", "v10.0.0", "--name", "up"]);
+
+    // Tag -> tag.
+    let result = run(dir, &["update", "up", "--to", "v1.0.0"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(manifest(dir).contains("ref = \"v1.0.0\""));
+    assert_eq!(
+        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        "v1\n"
+    );
+
+    // Tag -> branch, which must also change the recorded kind.
+    let result = run(dir, &["update", "up", "--to", "main"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let text = manifest(dir);
+    assert!(text.contains("kind = \"branch\""), "{text}");
+    assert!(text.contains("ref = \"main\""), "{text}");
+
+    // Branch -> commit.
+    let result = run(dir, &["update", "up", "--to", &up.first]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    let text = manifest(dir);
+    assert!(text.contains("kind = \"commit\""), "{text}");
+    assert!(text.contains(&format!("ref = \"{}\"", up.first)), "{text}");
+}
+
+#[test]
+fn update_to_rejects_an_unknown_ref_and_multiple_targets() {
+    let up = upstream("update-bad");
+    let scratch = repo("update-bad");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "a"]);
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "b"]);
+
+    let before = manifest(dir);
+
+    let result = run(dir, &["update", "a", "--to", "nope"]);
+    assert_eq!(result.code, 1);
+    assert!(
+        result.stderr.contains("has no tag or branch"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(manifest(dir), before);
+
+    let result = run(dir, &["update", "--all", "--to", "v1.0.0"]);
+    assert_eq!(result.code, 2, "--to over many entries is a usage error");
+}
+
+#[test]
+fn update_restores_a_missing_checkout() {
+    let up = upstream("update-missing");
+    let scratch = repo("update-missing");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+
+    fs::remove_dir_all(dir.join("repos").join("up")).unwrap();
+
+    let result = run(dir, &["update", "up"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert_eq!(
+        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        "v1\n"
+    );
+}
+
+#[test]
+fn update_repairs_a_checkout_that_drifted_off_its_pin() {
+    let up = upstream("update-drift");
+    let scratch = repo("update-drift");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(
+        dir,
+        &["add", &up.url(), "--commit", &up.first, "--name", "up"],
+    );
+
+    // Move the checkout off its pin behind agent-repos' back.
+    let clone = dir.join("repos").join("up");
+    git(&clone, &["fetch", "--depth", "1", "origin", &up.head]);
+    git(&clone, &["checkout", "--quiet", "--detach", &up.head]);
+    assert_eq!(fs::read_to_string(clone.join("lib.txt")).unwrap(), "v2\n");
+
+    let result = run(dir, &["update", "up"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert_eq!(
+        fs::read_to_string(clone.join("lib.txt")).unwrap(),
+        "v1\n",
+        "the pin should win over the working state"
+    );
+}
+
+#[test]
+fn status_reports_drift_and_local_edits() {
+    let up = upstream("status");
+    let scratch = repo("status");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(
+        dir,
+        &["add", &up.url(), "--tag", "v1.0.0", "--name", "clean"],
+    );
+    run(
+        dir,
+        &["add", &up.url(), "--tag", "v1.0.0", "--name", "dirty"],
+    );
+    run(
+        dir,
+        &["add", &up.url(), "--tag", "v1.0.0", "--name", "absent"],
+    );
+
+    fs::write(dir.join("repos").join("dirty").join("lib.txt"), "edited\n").unwrap();
+    fs::remove_dir_all(dir.join("repos").join("absent")).unwrap();
+
+    let result = run(dir, &["status"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+
+    let line = |name: &str| {
+        result
+            .stdout
+            .lines()
+            .find(|line| line.starts_with(name))
+            .unwrap_or_else(|| panic!("{name} should be listed"))
+            .to_string()
+    };
+
+    assert!(line("clean").contains("ok"), "{}", line("clean"));
+    assert!(
+        line("dirty").contains("locally modified"),
+        "{}",
+        line("dirty")
+    );
+    assert!(line("absent").contains("missing"), "{}", line("absent"));
+}
+
+#[test]
+fn pin_freezes_a_branch_entry_to_its_current_commit() {
+    let up = upstream("pin");
+    let scratch = repo("pin");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--branch", "main", "--name", "up"]);
+
+    let result = run(dir, &["pin", "up"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+
+    let text = manifest(dir);
+    assert!(text.contains("kind = \"commit\""), "{text}");
+    assert!(text.contains(&format!("ref = \"{}\"", up.head)), "{text}");
+    assert!(
+        text.contains("track = \"main\""),
+        "the branch it followed should be remembered: {text}"
+    );
+
+    // Pinning again reports no change.
+    let again = run(dir, &["pin", "up"]);
+    assert_eq!(again.code, 0);
+    assert!(again.stderr.contains("already pinned"), "{}", again.stderr);
+}
+
+#[test]
+fn remove_deletes_the_checkout_and_the_entry() {
+    let up = upstream("remove");
+    let scratch = repo("remove");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+
+    let result = run(dir, &["remove", "up", "--yes"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(!dir.join("repos").join("up").exists());
+    assert!(!manifest(dir).contains("name = \"up\""));
+}
+
+#[test]
+fn remove_keep_files_leaves_the_checkout() {
+    let up = upstream("remove-keep");
+    let scratch = repo("remove-keep");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+
+    let result = run(dir, &["remove", "up", "--keep-files"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+    assert!(dir.join("repos").join("up").exists());
+    assert!(!manifest(dir).contains("name = \"up\""));
+}
+
+#[test]
+fn remove_without_yes_refuses_when_there_is_no_terminal() {
+    let up = upstream("remove-tty");
+    let scratch = repo("remove-tty");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+
+    let before = manifest(dir);
+    let result = run(dir, &["remove", "up"]);
+
+    assert_eq!(result.code, 2, "{}", result.stderr);
+    assert!(result.stderr.contains("--yes"), "{}", result.stderr);
+    assert!(dir.join("repos").join("up").exists(), "nothing deleted");
+    assert_eq!(manifest(dir), before, "manifest untouched");
+}
+
+#[test]
+fn remove_refuses_a_directory_that_is_not_a_checkout() {
+    let up = upstream("remove-notrepo");
+    let scratch = repo("remove-notrepo");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+    run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+
+    // Something else now occupies the path. Deleting it would be destroying
+    // data agent-repos never created.
+    fs::remove_dir_all(dir.join("repos").join("up").join(".git")).unwrap();
+
+    let before = manifest(dir);
+    let result = run(dir, &["remove", "up", "--yes"]);
+
+    assert_eq!(result.code, 1);
+    assert!(
+        result.stderr.contains("not a git checkout"),
+        "{}",
+        result.stderr
+    );
+    assert!(dir.join("repos").join("up").exists());
+    assert_eq!(
+        manifest(dir),
+        before,
+        "a refused delete must leave the entry in place"
+    );
+}
+
+#[test]
+fn commands_naming_an_unknown_entry_say_so() {
+    let scratch = repo("unknown");
+    let dir = &scratch.path;
+    run(dir, &["init"]);
+
+    for args in [
+        vec!["update", "nope"],
+        vec!["remove", "nope", "--yes"],
+        vec!["pin", "nope"],
+    ] {
+        let result = run(dir, &args);
+        assert_eq!(result.code, 1, "{args:?}");
+        assert!(
+            result.stderr.contains("no entry named `nope`"),
+            "{args:?}: {}",
+            result.stderr
+        );
+    }
 }
 
 #[test]

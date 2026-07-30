@@ -210,6 +210,103 @@ pub(crate) fn clone_commit(url: &str, sha: &str, track: Option<&str>, dest: &Pat
     run(Some(dest), &["checkout", "--quiet", "--detach", sha])
 }
 
+/// Every tag on a remote, de-duplicated. Peeled `^{}` entries are filtered out
+/// by `--refs`, so each tag appears once.
+pub(crate) fn remote_tags(url: &str) -> Result<Vec<String>> {
+    let output = capture(None, &["ls-remote", "--tags", "--refs", url])?;
+
+    let mut tags: Vec<String> = output
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .filter_map(|(_, name)| name.trim().strip_prefix("refs/tags/"))
+        .map(str::to_string)
+        .collect();
+
+    tags.sort();
+    tags.dedup();
+    Ok(tags)
+}
+
+/// The commit currently checked out in a clone.
+pub(crate) fn head_sha(dir: &Path) -> Result<String> {
+    Ok(capture(Some(dir), &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string())
+}
+
+/// Resolves a ref inside a clone, or `None` if it is not present locally.
+pub(crate) fn local_sha(dir: &Path, reference: &str) -> Option<String> {
+    capture(Some(dir), &["rev-parse", "--verify", "--quiet", reference])
+        .ok()
+        .map(|sha| sha.trim().to_string())
+        .filter(|sha| !sha.is_empty())
+}
+
+/// Whether a clone has uncommitted modifications. Reference clones are
+/// read-only by contract, so this is worth surfacing.
+pub(crate) fn is_dirty(dir: &Path) -> Result<bool> {
+    Ok(!capture(Some(dir), &["status", "--porcelain"])?
+        .trim()
+        .is_empty())
+}
+
+/// Whether `dir` looks like a git checkout at all.
+pub(crate) fn is_repo(dir: &Path) -> bool {
+    dir.join(".git").exists()
+}
+
+/// Moves an existing clone onto an exact commit, fetching it if needed.
+pub(crate) fn fetch_commit(dir: &Path, sha: &str) -> Result<()> {
+    if local_sha(dir, &format!("{sha}^{{commit}}")).is_none()
+        && !try_run(Some(dir), &["fetch", "--depth", "1", "origin", sha])?
+    {
+        return Err(Error::failure(format!(
+            "could not fetch commit {sha}; the remote may have pruned it"
+        )));
+    }
+    run(Some(dir), &["checkout", "--quiet", "--detach", sha])
+}
+
+/// Moves an existing clone onto a tag.
+pub(crate) fn fetch_tag(dir: &Path, tag: &str) -> Result<()> {
+    run(
+        Some(dir),
+        &[
+            "fetch",
+            "--depth",
+            "1",
+            "--force",
+            "origin",
+            &format!("refs/tags/{tag}:refs/tags/{tag}"),
+        ],
+    )?;
+    run(
+        Some(dir),
+        &[
+            "checkout",
+            "--quiet",
+            "--detach",
+            &format!("refs/tags/{tag}"),
+        ],
+    )
+}
+
+/// Fast-forwards a branch checkout to the remote tip.
+///
+/// A hard reset rather than a pull: reference clones are read-only by
+/// contract, so there is nothing to preserve, and this cannot fail the way a
+/// non-fast-forward pull does.
+pub(crate) fn fetch_and_reset(dir: &Path, branch: &str) -> Result<()> {
+    run(
+        Some(dir),
+        &["fetch", "--depth", "1", "--force", "origin", branch],
+    )?;
+    run(
+        Some(dir),
+        &["checkout", "--quiet", "--detach", "FETCH_HEAD"],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

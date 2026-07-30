@@ -202,16 +202,6 @@ fn add(argv: Vec<String>) -> Result<()> {
     repo::add(url, ref_spec, name, path, desc, usage, no_sync)
 }
 
-#[derive(Debug)]
-#[expect(dead_code, reason = "reported via Debug until the command lands")]
-struct UpdateOptions {
-    names: Vec<String>,
-    all: bool,
-    to: Option<String>,
-    latest: bool,
-    yes: bool,
-}
-
 fn update(argv: Vec<String>) -> Result<()> {
     let mut parser = Parser::new(argv);
     let all = parser.flag("all", Some('a'))?;
@@ -234,16 +224,7 @@ fn update(argv: Vec<String>) -> Result<()> {
         return Err(Error::usage("--to and --latest are mutually exclusive"));
     }
 
-    stub(
-        "update",
-        &UpdateOptions {
-            names,
-            all,
-            to,
-            latest,
-            yes,
-        },
-    )
+    repo::update(names, all, to, latest, yes)
 }
 
 fn restore(argv: Vec<String>) -> Result<()> {
@@ -253,28 +234,13 @@ fn restore(argv: Vec<String>) -> Result<()> {
     repo::restore()
 }
 
-#[derive(Debug)]
-#[expect(dead_code, reason = "reported via Debug until the command lands")]
-struct RemoveOptions {
-    name: String,
-    keep_files: bool,
-    yes: bool,
-}
-
 fn remove(argv: Vec<String>) -> Result<()> {
     let mut parser = Parser::new(argv);
     let keep_files = parser.flag("keep-files", None)?;
     let yes = parser.flag("yes", Some('y'))?;
     let name = exactly_one("remove", "name", parser.finish()?)?;
 
-    stub(
-        "remove",
-        &RemoveOptions {
-            name,
-            keep_files,
-            yes,
-        },
-    )
+    repo::remove(name, keep_files, yes)
 }
 
 fn list(argv: Vec<String>) -> Result<()> {
@@ -285,25 +251,18 @@ fn list(argv: Vec<String>) -> Result<()> {
     repo::list(json)
 }
 
-#[derive(Debug)]
-struct StatusOptions;
-
 fn status(argv: Vec<String>) -> Result<()> {
     let parser = Parser::new(argv);
     no_positionals("status", &parser.finish()?)?;
-    stub("status", &StatusOptions)
-}
 
-#[derive(Debug)]
-#[expect(dead_code, reason = "reported via Debug until the command lands")]
-struct PinOptions {
-    name: String,
+    repo::status()
 }
 
 fn pin(argv: Vec<String>) -> Result<()> {
     let parser = Parser::new(argv);
     let name = exactly_one("pin", "name", parser.finish()?)?;
-    stub("pin", &PinOptions { name })
+
+    repo::pin(name)
 }
 
 #[derive(Debug)]
@@ -413,15 +372,7 @@ mod tests {
     /// write into the checkout the tests are running from.
     #[test]
     fn unimplemented_commands_parse_and_report() {
-        let commands = [
-            vec!["update", "--all"],
-            vec!["update", "effect"],
-            vec!["remove", "effect", "--yes"],
-            vec!["status"],
-            vec!["pin", "effect"],
-            vec!["sync", "--check"],
-            vec!["completions", "fish"],
-        ];
+        let commands = [vec!["sync", "--check"], vec!["completions", "fish"]];
 
         for command in commands {
             let err = run(argv(&command)).unwrap_err();

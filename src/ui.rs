@@ -1,7 +1,9 @@
 //! Terminal output. Everything diagnostic goes to stderr so that stdout stays
 //! clean for machine-readable output such as `list --json`.
 
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
+
+use crate::error::{Error, Result};
 
 const RED: &str = "\x1b[31m";
 const DIM: &str = "\x1b[2m";
@@ -30,4 +32,34 @@ pub(crate) fn error(message: &str) {
     } else {
         eprintln!("agent-repos: error: {message}");
     }
+}
+
+/// Asks before doing something destructive.
+///
+/// With no terminal to ask on — a script, a hook, CI — this is an error rather
+/// than a silent yes, so an unattended run can never delete something nobody
+/// agreed to. `--yes` is the way to say so up front.
+pub(crate) fn confirm(prompt: &str, assume_yes: bool) -> Result<bool> {
+    if assume_yes {
+        return Ok(true);
+    }
+
+    if !io::stdin().is_terminal() {
+        return Err(Error::usage(format!(
+            "{prompt} Pass --yes to confirm without a terminal."
+        )));
+    }
+
+    eprint!("agent-repos: {prompt} [y/N] ");
+    let _ = io::stderr().flush();
+
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|err| Error::failure(format!("could not read a reply: {err}")))?;
+
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
