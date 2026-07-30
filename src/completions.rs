@@ -1,5 +1,20 @@
 //! Shell completion scripts, emitted on stdout for the user to source.
 
+use crate::error::{Error, Result};
+
+/// Resolves a shell name to its script. Knowing which shells exist belongs
+/// here, next to the scripts, rather than in the argument parser.
+pub(crate) fn script(shell: &str) -> Result<String> {
+    match shell {
+        "fish" => Ok(fish()),
+        "bash" => Ok(bash()),
+        "zsh" => Ok(zsh()),
+        other => Err(Error::usage(format!(
+            "unsupported shell `{other}` (expected fish, bash or zsh)"
+        ))),
+    }
+}
+
 /// Commands and their one-line descriptions, shared by every shell.
 const COMMANDS: &[(&str, &str)] = &[
     ("init", "Prepare this repository for reference repos"),
@@ -19,7 +34,7 @@ const COMMANDS: &[(&str, &str)] = &[
 /// Commands whose first argument is an entry name.
 const NAME_TAKING: &[&str] = &["update", "remove", "pin"];
 
-pub(crate) fn fish() -> String {
+fn fish() -> String {
     let mut out = String::from(
         "# agent-repos completions for fish\n\
          # Install: agent-repos completions fish > ~/.config/fish/completions/agent-repos.fish\n\
@@ -71,7 +86,7 @@ pub(crate) fn fish() -> String {
     out
 }
 
-pub(crate) fn bash() -> String {
+fn bash() -> String {
     let commands: Vec<&str> = COMMANDS.iter().map(|(name, _)| *name).collect();
 
     format!(
@@ -111,7 +126,7 @@ pub(crate) fn bash() -> String {
     )
 }
 
-pub(crate) fn zsh() -> String {
+fn zsh() -> String {
     let mut descriptions = String::new();
     for (command, description) in COMMANDS {
         descriptions.push_str(&format!("        '{command}:{description}'\n"));

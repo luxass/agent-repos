@@ -148,20 +148,38 @@ fn auto_sync(root: &Path, manifest: &Manifest) {
     if manifest.targets.is_empty() {
         return;
     }
-    if let Err(err) = sync::apply(root, manifest, &manifest.targets, false, true) {
+    if let Err(err) = sync::apply(root, manifest, &manifest.targets, sync::SyncMode::Quiet) {
         ui::error(&format!("could not refresh instruction files: {err}"));
     }
 }
 
-pub(crate) fn add(
-    url: String,
-    ref_spec: RefSpec,
-    name: Option<String>,
-    path: Option<String>,
-    desc: Option<String>,
-    usage: Option<String>,
-    no_sync: bool,
-) -> Result<()> {
+/// A parsed `add` invocation.
+///
+/// A struct rather than seven positional parameters: `name`, `path`, `desc`
+/// and `usage` are all `Option<String>`, so transposing two of them would
+/// compile cleanly and quietly record the wrong thing.
+#[derive(Debug)]
+pub(crate) struct AddRequest {
+    pub(crate) url: String,
+    pub(crate) ref_spec: RefSpec,
+    pub(crate) name: Option<String>,
+    pub(crate) path: Option<String>,
+    pub(crate) desc: Option<String>,
+    pub(crate) usage: Option<String>,
+    pub(crate) no_sync: bool,
+}
+
+pub(crate) fn add(request: AddRequest) -> Result<()> {
+    let AddRequest {
+        url,
+        ref_spec,
+        name,
+        path,
+        desc,
+        usage,
+        no_sync,
+    } = request;
+
     let root = git::root()?;
     let mut manifest = Manifest::load(&root)?;
 
@@ -568,13 +586,26 @@ fn check_removable(root: &Path, clone_dir: &str, path: &str) -> Result<PathBuf> 
     Ok(resolved)
 }
 
-pub(crate) fn update(
-    names: Vec<String>,
-    all: bool,
-    to: Option<String>,
-    latest: bool,
-    yes: bool,
-) -> Result<()> {
+/// A parsed `update` invocation. `all`, `latest` and `yes` are all booleans,
+/// so they travel together in a named struct rather than by position.
+#[derive(Debug)]
+pub(crate) struct UpdateRequest {
+    pub(crate) names: Vec<String>,
+    pub(crate) all: bool,
+    pub(crate) to: Option<String>,
+    pub(crate) latest: bool,
+    pub(crate) yes: bool,
+}
+
+pub(crate) fn update(request: UpdateRequest) -> Result<()> {
+    let UpdateRequest {
+        names,
+        all,
+        to,
+        latest,
+        yes,
+    } = request;
+
     let root = git::root()?;
     let mut manifest = Manifest::load(&root)?;
 

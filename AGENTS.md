@@ -59,7 +59,8 @@ nm --print-size --size-sort --radix=d \
 ```text
 agent-repos/
 |-- src/
-|   |-- main.rs           # Command dispatch and exit codes
+|   |-- main.rs           # Module wiring and the exit-code path. Keep it tiny
+|   |-- cli.rs            # argv -> a typed call: help, dispatch, flag parsing
 |   |-- args.rs           # Hand-rolled argument parser
 |   |-- error.rs          # Error type and ExitCode
 |   |-- ui.rs             # stderr logging, colour, confirmation prompts
@@ -82,7 +83,7 @@ agent-repos/
 
 | Task | Location |
 | --- | --- |
-| Add a command or flag | `src/main.rs`, then `HELP` in the same file, then `src/completions.rs` |
+| Add a command or flag | `src/cli.rs` — the command table, its parser, and `HELP` — then `src/completions.rs` |
 | Change argument parsing behaviour | `src/args.rs` |
 | Change an exit code | `src/error.rs` |
 | Change terminal output, colour or prompts | `src/ui.rs` |
@@ -124,6 +125,12 @@ cargo build --release && ls -l target/release/agent-repos
 - Colour only on a TTY, and never when `NO_COLOR` is set.
 - Do not add a helper before something calls it. An uncalled function fails
   `-D warnings`, and suppressing that costs more than waiting.
+- `main.rs` stays wiring only. Argument handling belongs in `cli.rs`, work
+  belongs in `repo.rs` or `sync.rs`. If you find yourself adding a `use` in the
+  middle of a file to make an edit fit, the edit is in the wrong file.
+- More than two same-typed parameters in a row is a transposition waiting to
+  happen — `AddRequest` and `UpdateRequest` exist for exactly that reason. Two
+  booleans that cannot both be true want an enum, as `SyncMode` does.
 
 ### Exit codes
 

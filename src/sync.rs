@@ -212,16 +212,28 @@ fn desired(existing: &str, manifest: &Manifest, file: &str) -> Result<String> {
     rewrite(&text, manifest, file)
 }
 
-/// Brings every configured target up to date.
+/// How [`apply`] should treat the targets.
 ///
-/// With `check`, nothing is written and the return value says whether anything
-/// would have changed.
+/// An enum rather than a pair of booleans, because "check, but quietly" is not
+/// a thing and a pair of booleans would let a caller ask for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SyncMode {
+    /// Write changes and name each file touched.
+    Report,
+    /// Write changes without logging, for the refresh after add/remove/update
+    /// where the command reports its own result.
+    Quiet,
+    /// Change nothing; report what is stale.
+    Check,
+}
+
+/// Brings every configured target up to date, returning whether anything was
+/// — or in [`SyncMode::Check`], would have been — changed.
 pub(crate) fn apply(
     root: &Path,
     manifest: &Manifest,
     targets: &[String],
-    check: bool,
-    quiet: bool,
+    mode: SyncMode,
 ) -> Result<bool> {
     let mut drifted = false;
 
@@ -235,13 +247,13 @@ pub(crate) fn apply(
         if next == existing {
             continue;
         }
-
         drifted = true;
-        if check {
-            ui::log(&format!("{target} is out of date"));
-        } else {
-            fsx::write_atomic(&path, &next)?;
-            if !quiet {
+
+        match mode {
+            SyncMode::Check => ui::log(&format!("{target} is out of date")),
+            SyncMode::Quiet => fsx::write_atomic(&path, &next)?,
+            SyncMode::Report => {
+                fsx::write_atomic(&path, &next)?;
                 ui::log(&format!(
                     "{} {target}",
                     if existing.is_empty() {
@@ -257,7 +269,7 @@ pub(crate) fn apply(
     Ok(drifted)
 }
 
-pub(crate) fn sync(targets: Vec<String>, check: bool) -> Result<()> {
+pub(crate) fn sync(targets: Vec<String>, mode: SyncMode) -> Result<()> {
     let root = crate::git::root()?;
     let manifest = Manifest::load(&root)?;
 
@@ -272,9 +284,9 @@ pub(crate) fn sync(targets: Vec<String>, check: bool) -> Result<()> {
         return Ok(());
     }
 
-    let drifted = apply(&root, &manifest, &targets, check, false)?;
+    let drifted = apply(&root, &manifest, &targets, mode)?;
 
-    if check && drifted {
+    if drifted && mode == SyncMode::Check {
         return Err(Error::failure(
             "instruction files are out of date; run `agent-repos sync`",
         ));
