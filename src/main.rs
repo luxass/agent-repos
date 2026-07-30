@@ -7,6 +7,11 @@
 
 mod args;
 mod error;
+mod fsx;
+mod git;
+mod manifest;
+mod paths;
+mod repo;
 mod ui;
 
 use args::Parser;
@@ -183,23 +188,14 @@ impl Shell {
     }
 }
 
-#[derive(Debug)]
-#[expect(dead_code, reason = "reported via Debug until the command lands")]
-struct InitOptions {
-    dir: Option<String>,
-    targets: Vec<String>,
-    no_instructions: bool,
-}
-
 fn init(argv: Vec<String>) -> Result<()> {
     let mut parser = Parser::new(argv);
-    let options = InitOptions {
-        dir: parser.value("dir", None)?,
-        targets: parser.values("target", None)?,
-        no_instructions: parser.flag("no-instructions", None)?,
-    };
+    let dir = parser.value("dir", None)?;
+    let targets = parser.values("target", None)?;
+    let no_instructions = parser.flag("no-instructions", None)?;
     no_positionals("init", &parser.finish()?)?;
-    stub("init", &options)
+
+    repo::init(dir, targets, no_instructions)
 }
 
 #[derive(Debug)]
@@ -321,19 +317,12 @@ fn remove(argv: Vec<String>) -> Result<()> {
     )
 }
 
-#[derive(Debug)]
-#[expect(dead_code, reason = "reported via Debug until the command lands")]
-struct ListOptions {
-    json: bool,
-}
-
 fn list(argv: Vec<String>) -> Result<()> {
     let mut parser = Parser::new(argv);
-    let options = ListOptions {
-        json: parser.flag("json", None)?,
-    };
+    let json = parser.flag("json", None)?;
     no_positionals("list", &parser.finish()?)?;
-    stub("list", &options)
+
+    repo::list(json)
 }
 
 #[derive(Debug)]
@@ -458,18 +447,19 @@ mod tests {
         }
     }
 
+    /// `init` and `list` are deliberately absent: they now touch the
+    /// filesystem, so exercising them belongs in the integration tests where
+    /// there is a scratch repository to work in. Running them here would write
+    /// into the checkout the tests are running from.
     #[test]
-    fn every_command_parses_and_reports_unimplemented() {
+    fn unimplemented_commands_parse_and_report() {
         let commands = [
-            vec!["init"],
-            vec!["init", "--dir", "vendor", "--target", "AGENTS.md"],
             vec!["add", "https://example.com/o/r"],
             vec!["add", "https://example.com/o/r", "--tag", "v1.0.0"],
             vec!["update", "--all"],
             vec!["update", "effect"],
             vec!["restore"],
             vec!["remove", "effect", "--yes"],
-            vec!["list", "--json"],
             vec!["status"],
             vec!["pin", "effect"],
             vec!["sync", "--check"],

@@ -5,6 +5,9 @@ use std::fmt;
 /// Process exit codes. `0` is returned implicitly on success.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExitCode {
+    /// The command was well-formed but could not be carried out: a malformed
+    /// manifest, a git failure, a missing repository.
+    Failure = 1,
     /// The command line itself was wrong: unknown option, missing value,
     /// mutually exclusive flags.
     Usage = 2,
@@ -19,6 +22,13 @@ pub(crate) struct Error {
 }
 
 impl Error {
+    pub(crate) fn failure(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: ExitCode::Failure,
+        }
+    }
+
     pub(crate) fn usage(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
