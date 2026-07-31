@@ -1,0 +1,48 @@
+//! Error type and process exit codes.
+
+use std::fmt;
+
+/// Process exit codes. `0` is returned implicitly on success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExitCode {
+    /// The command was well-formed but could not be carried out: a malformed
+    /// manifest, a git failure, a missing repository.
+    Failure = 1,
+    /// The command line itself was wrong: unknown option, missing value,
+    /// mutually exclusive flags.
+    Usage = 2,
+}
+
+#[derive(Debug)]
+pub(crate) struct Error {
+    message: String,
+    code: ExitCode,
+}
+
+impl Error {
+    pub(crate) fn failure(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: ExitCode::Failure,
+        }
+    }
+
+    pub(crate) fn usage(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: ExitCode::Usage,
+        }
+    }
+
+    pub(crate) fn code(&self) -> i32 {
+        self.code as i32
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+pub(crate) type Result<T> = std::result::Result<T, Error>;
