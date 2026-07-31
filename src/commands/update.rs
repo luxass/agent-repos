@@ -34,6 +34,7 @@ pub(crate) fn update(request: UpdateRequest) -> Result<()> {
     } = request;
 
     let root = git::root()?;
+    let _lock = Manifest::lock(&root)?;
     let mut manifest = Manifest::load(&root)?;
 
     let selected: Vec<usize> = if all {

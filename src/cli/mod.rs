@@ -22,8 +22,8 @@ Usage: agent-repos <command> [options]
 
 Commands:
   init    [--dir DIR] [--target FILE]... [--no-instructions]
-      Prepare the current Git repository: write .agent-repos, ignore the
-      clone directory, and seed the agent instruction blocks.
+      Prepare the current Git repository: write .agent-repos/manifest.toml,
+      ignore the clone directory and write lock, and seed the instruction blocks.
 
   add     <url> [--tag T | --branch B | --commit SHA]
           [--name N] [--path P] [--desc TEXT] [--use TEXT] [--no-sync]
@@ -52,8 +52,8 @@ Commands:
 
 Examples:
   agent-repos init
-  agent-repos add https://github.com/Effect-TS/effect --tag v3.12.0
-  agent-repos add https://github.com/owner/repo --branch main
+  agent-repos add github:Effect-TS/effect --tag v3.12.0
+  agent-repos add git.example.com:owner/repo --branch main
   agent-repos update --all --latest
   agent-repos sync --check
 ";
