@@ -1,4 +1,4 @@
-//! Hand-rolled argument parsing.
+//! Hand-rolled argument parsing for the command-line interface.
 //!
 //! A dependency like `clap` would cost more than the rest of the binary put
 //! together, and this CLI only needs four shapes: `--flag`, `--opt value`,

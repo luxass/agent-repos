@@ -9,7 +9,6 @@
 //! [`commands`] does the work, and the only thing this file decides is how a
 //! failure reaches the shell.
 
-mod args;
 mod cli;
 mod commands;
 mod completions;
