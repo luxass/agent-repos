@@ -8,6 +8,9 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const BIN: &str = env!("CARGO_BIN_EXE_agent-repos");
+const MANIFEST_PATH: &str = ".agent-repos/manifest.toml";
+const DEFAULT_REPOS: &str = ".agent-repos/repos";
+const LOCK_PATH: &str = ".agent-repos/write.lock";
 
 /// A scratch directory that cleans itself up.
 struct Scratch {
@@ -85,7 +88,11 @@ fn run(dir: &Path, args: &[&str]) -> Run {
 }
 
 fn manifest(dir: &Path) -> String {
-    fs::read_to_string(dir.join(".agent-repos")).expect("manifest should exist")
+    fs::read_to_string(dir.join(MANIFEST_PATH)).expect("manifest should exist")
+}
+
+fn checkout(dir: &Path, name: &str) -> PathBuf {
+    dir.join(DEFAULT_REPOS).join(name)
 }
 
 #[test]
@@ -98,13 +105,18 @@ fn init_creates_manifest_gitignore_and_clone_dir() {
 
     let text = manifest(dir);
     assert!(text.contains("version = 1"));
-    assert!(text.contains("dir = \"repos\""));
+    assert!(text.contains(&format!("dir = \"{DEFAULT_REPOS}\"")));
     assert!(text.contains("targets = [\"AGENTS.md\"]"));
 
-    assert!(dir.join("repos").is_dir(), "clone directory should exist");
+    assert!(
+        dir.join(DEFAULT_REPOS).is_dir(),
+        "clone directory should exist"
+    );
+    assert!(dir.join(LOCK_PATH).is_file(), "lock file should exist");
 
     let ignore = fs::read_to_string(dir.join(".gitignore")).unwrap();
-    assert!(ignore.lines().any(|line| line == "repos/"));
+    assert!(ignore.lines().any(|line| line == ".agent-repos/repos/"));
+    assert!(ignore.lines().any(|line| line == ".agent-repos/write.lock"));
 }
 
 #[test]
@@ -117,13 +129,13 @@ fn init_leaves_the_manifest_tracked() {
     // The manifest is the thing teammates restore from, so it must not be
     // swept up by the ignore rule that hides the clone directory.
     let output = Command::new("git")
-        .args(["check-ignore", ".agent-repos"])
+        .args(["check-ignore", MANIFEST_PATH])
         .current_dir(dir)
         .output()
         .unwrap();
     assert!(
         !output.status.success(),
-        ".agent-repos must not be gitignored"
+        "{MANIFEST_PATH} must not be gitignored"
     );
 }
 
@@ -186,10 +198,10 @@ fn init_is_idempotent_and_preserves_entries() {
 
     // A hand-added entry must survive a second init.
     fs::write(
-        dir.join(".agent-repos"),
+        dir.join(MANIFEST_PATH),
         format!(
             "{first}\n[[repo]]\nname = \"effect\"\nurl = \"https://example.invalid/effect\"\n\
-             ref = \"v1.0.0\"\nkind = \"tag\"\npath = \"repos/effect\"\n"
+             ref = \"v1.0.0\"\nkind = \"tag\"\npath = \"{DEFAULT_REPOS}/effect\"\n"
         ),
     )
     .unwrap();
@@ -206,7 +218,10 @@ fn init_is_idempotent_and_preserves_entries() {
 
     let ignore = fs::read_to_string(dir.join(".gitignore")).unwrap();
     assert_eq!(
-        ignore.lines().filter(|line| *line == "repos/").count(),
+        ignore
+            .lines()
+            .filter(|line| *line == ".agent-repos/repos/")
+            .count(),
         1,
         "gitignore entry should not be duplicated"
     );
@@ -219,7 +234,7 @@ fn list_reports_presence_per_entry() {
     run(dir, &["init"]);
 
     fs::write(
-        dir.join(".agent-repos"),
+        dir.join(MANIFEST_PATH),
         "version = 1\ndir = \"repos\"\ntargets = []\n\n\
          [[repo]]\nname = \"here\"\nurl = \"https://example.invalid/here\"\n\
          ref = \"v1.0.0\"\nkind = \"tag\"\npath = \"repos/here\"\n\n\
@@ -254,7 +269,7 @@ fn list_json_is_well_formed_and_machine_readable() {
     run(dir, &["init"]);
 
     fs::write(
-        dir.join(".agent-repos"),
+        dir.join(MANIFEST_PATH),
         "version = 1\ndir = \"repos\"\ntargets = [\"AGENTS.md\"]\n\n\
          [[repo]]\nname = \"effect\"\nurl = \"https://example.invalid/effect\"\n\
          ref = \"v3.12.0\"\nkind = \"tag\"\npath = \"repos/effect\"\n\
@@ -302,7 +317,7 @@ fn a_malformed_manifest_reports_the_line() {
     run(dir, &["init"]);
 
     fs::write(
-        dir.join(".agent-repos"),
+        dir.join(MANIFEST_PATH),
         "version = 1\n[[repo]]\nnope = \"x\"\n",
     )
     .unwrap();
@@ -321,7 +336,7 @@ fn a_path_escaping_the_clone_directory_is_refused() {
 
     for path in ["../../evil", "/etc/passwd", "elsewhere/evil"] {
         fs::write(
-            dir.join(".agent-repos"),
+            dir.join(MANIFEST_PATH),
             format!(
                 "version = 1\ndir = \"repos\"\n[[repo]]\nname = \"a\"\nurl = \"u\"\n\
                  ref = \"r\"\nkind = \"tag\"\npath = \"{path}\"\n"
@@ -388,7 +403,7 @@ fn add_with_a_tag_checks_out_that_tag() {
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
 
     assert_eq!(
-        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        fs::read_to_string(checkout(dir, "up").join("lib.txt")).unwrap(),
         "v1\n",
         "the tagged content should be checked out, not the branch head"
     );
@@ -397,6 +412,53 @@ fn add_with_a_tag_checks_out_that_tag() {
     assert!(text.contains("kind = \"tag\""));
     assert!(text.contains("ref = \"v1.0.0\""));
     assert!(!text.contains("track ="), "a tag pin has nothing to track");
+}
+
+#[test]
+fn concurrent_adds_preserve_every_manifest_entry() {
+    let up = upstream("concurrent-add");
+    let scratch = repo("concurrent-add");
+    let dir = &scratch.path;
+    run(dir, &["init", "--no-instructions"]);
+
+    let children = ["alpha", "beta", "gamma"].map(|name| {
+        Command::new(BIN)
+            .args([
+                "add",
+                &up.url(),
+                "--tag",
+                "v1.0.0",
+                "--name",
+                name,
+                "--no-sync",
+            ])
+            .current_dir(dir)
+            .env("NO_COLOR", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("concurrent add should start")
+    });
+
+    for child in children {
+        let output = child
+            .wait_with_output()
+            .expect("concurrent add should finish");
+        assert!(
+            output.status.success(),
+            "concurrent add failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let text = manifest(dir);
+    for name in ["alpha", "beta", "gamma"] {
+        assert!(
+            text.contains(&format!("name = \"{name}\"")),
+            "manifest lost `{name}`:\n{text}"
+        );
+        assert!(checkout(dir, name).is_dir(), "{name} was not cloned");
+    }
 }
 
 #[test]
@@ -422,7 +484,7 @@ fn add_without_a_ref_pins_the_default_head_commit() {
 
     // The sha is pinned, so the checkout is the second commit's content.
     assert_eq!(
-        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        fs::read_to_string(checkout(dir, "up").join("lib.txt")).unwrap(),
         "v2\n"
     );
     // And it is reported, not silently chosen.
@@ -442,7 +504,7 @@ fn add_with_an_explicit_commit_checks_it_out() {
     );
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
     assert_eq!(
-        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        fs::read_to_string(checkout(dir, "up").join("lib.txt")).unwrap(),
         "v1\n"
     );
 }
@@ -513,7 +575,7 @@ fn add_refuses_a_path_outside_the_clone_directory() {
             ],
         );
         assert_eq!(result.code, 1, "{path} should be refused");
-        assert!(!dir.join("repos").join("up").exists());
+        assert!(!checkout(dir, "up").exists());
     }
 }
 
@@ -545,19 +607,19 @@ fn restore_reproduces_every_pinned_checkout() {
 
     let expected = manifest(dir);
 
-    // This is the fresh-clone path: repos/ is gitignored, so a teammate has
-    // nothing until restore runs.
-    fs::remove_dir_all(dir.join("repos")).unwrap();
+    // This is the fresh-clone path: the clone directory is gitignored, so a
+    // teammate has nothing until restore runs.
+    fs::remove_dir_all(dir.join(DEFAULT_REPOS)).unwrap();
 
     let result = run(dir, &["restore"]);
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
 
     assert_eq!(
-        fs::read_to_string(dir.join("repos").join("tagged").join("lib.txt")).unwrap(),
+        fs::read_to_string(checkout(dir, "tagged").join("lib.txt")).unwrap(),
         "v1\n"
     );
     assert_eq!(
-        fs::read_to_string(dir.join("repos").join("pinned").join("lib.txt")).unwrap(),
+        fs::read_to_string(checkout(dir, "pinned").join("lib.txt")).unwrap(),
         "v2\n"
     );
     assert_eq!(manifest(dir), expected, "restore must not rewrite the pins");
@@ -582,7 +644,7 @@ fn a_plain_update_never_moves_a_pin() {
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
     assert_eq!(manifest(dir), before, "a plain update must not move a pin");
     assert_eq!(
-        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        fs::read_to_string(checkout(dir, "up").join("lib.txt")).unwrap(),
         "v1\n"
     );
     assert!(result.stderr.contains("--latest"), "{}", result.stderr);
@@ -604,7 +666,7 @@ fn update_latest_picks_the_highest_version_not_the_highest_string() {
         "should choose v10.0.0 over v2.0.0"
     );
     assert_eq!(
-        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        fs::read_to_string(checkout(dir, "up").join("lib.txt")).unwrap(),
         "v2\n"
     );
 
@@ -626,7 +688,7 @@ fn update_to_repoints_and_reclassifies() {
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
     assert!(manifest(dir).contains("ref = \"v1.0.0\""));
     assert_eq!(
-        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        fs::read_to_string(checkout(dir, "up").join("lib.txt")).unwrap(),
         "v1\n"
     );
 
@@ -677,12 +739,12 @@ fn update_restores_a_missing_checkout() {
     run(dir, &["init"]);
     run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
 
-    fs::remove_dir_all(dir.join("repos").join("up")).unwrap();
+    fs::remove_dir_all(checkout(dir, "up")).unwrap();
 
     let result = run(dir, &["update", "up"]);
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
     assert_eq!(
-        fs::read_to_string(dir.join("repos").join("up").join("lib.txt")).unwrap(),
+        fs::read_to_string(checkout(dir, "up").join("lib.txt")).unwrap(),
         "v1\n"
     );
 }
@@ -699,7 +761,7 @@ fn update_repairs_a_checkout_that_drifted_off_its_pin() {
     );
 
     // Move the checkout off its pin behind agent-repos' back.
-    let clone = dir.join("repos").join("up");
+    let clone = checkout(dir, "up");
     git(&clone, &["fetch", "--depth", "1", "origin", &up.head]);
     git(&clone, &["checkout", "--quiet", "--detach", &up.head]);
     assert_eq!(fs::read_to_string(clone.join("lib.txt")).unwrap(), "v2\n");
@@ -732,8 +794,8 @@ fn status_reports_drift_and_local_edits() {
         &["add", &up.url(), "--tag", "v1.0.0", "--name", "absent"],
     );
 
-    fs::write(dir.join("repos").join("dirty").join("lib.txt"), "edited\n").unwrap();
-    fs::remove_dir_all(dir.join("repos").join("absent")).unwrap();
+    fs::write(checkout(dir, "dirty").join("lib.txt"), "edited\n").unwrap();
+    fs::remove_dir_all(checkout(dir, "absent")).unwrap();
 
     let result = run(dir, &["status"]);
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
@@ -791,7 +853,7 @@ fn remove_deletes_the_checkout_and_the_entry() {
 
     let result = run(dir, &["remove", "up", "--yes"]);
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
-    assert!(!dir.join("repos").join("up").exists());
+    assert!(!checkout(dir, "up").exists());
     assert!(!manifest(dir).contains("name = \"up\""));
 }
 
@@ -805,7 +867,7 @@ fn remove_keep_files_leaves_the_checkout() {
 
     let result = run(dir, &["remove", "up", "--keep-files"]);
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
-    assert!(dir.join("repos").join("up").exists());
+    assert!(checkout(dir, "up").exists());
     assert!(!manifest(dir).contains("name = \"up\""));
 }
 
@@ -822,7 +884,7 @@ fn remove_without_yes_refuses_when_there_is_no_terminal() {
 
     assert_eq!(result.code, 2, "{}", result.stderr);
     assert!(result.stderr.contains("--yes"), "{}", result.stderr);
-    assert!(dir.join("repos").join("up").exists(), "nothing deleted");
+    assert!(checkout(dir, "up").exists(), "nothing deleted");
     assert_eq!(manifest(dir), before, "manifest untouched");
 }
 
@@ -836,7 +898,7 @@ fn remove_refuses_a_directory_that_is_not_a_checkout() {
 
     // Something else now occupies the path. Deleting it would be destroying
     // data agent-repos never created.
-    fs::remove_dir_all(dir.join("repos").join("up").join(".git")).unwrap();
+    fs::remove_dir_all(checkout(dir, "up").join(".git")).unwrap();
 
     let before = manifest(dir);
     let result = run(dir, &["remove", "up", "--yes"]);
@@ -847,7 +909,7 @@ fn remove_refuses_a_directory_that_is_not_a_checkout() {
         "{}",
         result.stderr
     );
-    assert!(dir.join("repos").join("up").exists());
+    assert!(checkout(dir, "up").exists());
     assert_eq!(
         manifest(dir),
         before,
@@ -904,7 +966,9 @@ fn sync_fills_blocks_and_leaves_prose_alone() {
     let text = agents_md(dir);
     assert!(text.starts_with("# My Service\n\nExisting prose.\n"));
     assert!(text.contains("<!-- agent-repos:guidance -->"));
-    assert!(text.contains("| effect | v1.0.0 | repos/effect | Effect runtime |"));
+    assert!(text.contains(&format!(
+        "| effect | v1.0.0 | {DEFAULT_REPOS}/effect | Effect runtime |"
+    )));
 }
 
 #[test]
@@ -936,7 +1000,7 @@ fn sync_check_exits_one_when_a_block_is_stale() {
     run(dir, &["init"]);
     run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
 
-    let tampered = agents_md(dir).replace("repos/up", "somewhere-else");
+    let tampered = agents_md(dir).replace(&format!("{DEFAULT_REPOS}/up"), "somewhere-else");
     fs::write(dir.join("AGENTS.md"), &tampered).unwrap();
 
     let check = run(dir, &["sync", "--check"]);
@@ -993,7 +1057,8 @@ fn every_block_type_renders() {
     );
     assert!(text.contains("Consult for: API shapes"), "{text}");
     assert!(
-        text.lines().any(|line| line == "repos/effect"),
+        text.lines()
+            .any(|line| line == format!("{DEFAULT_REPOS}/effect")),
         "paths block: {text}"
     );
 }
@@ -1040,7 +1105,7 @@ fn sync_follows_the_configured_targets() {
     assert_eq!(run(dir, &["sync"]).code, 0);
     assert!(dir.join("AGENTS.md").exists());
     assert!(dir.join("CLAUDE.md").exists());
-    assert!(agents_md(dir).contains("Agent reference repositories"));
+    assert!(agents_md(dir).contains("Vendored Repositories"));
 }
 
 #[test]
@@ -1076,11 +1141,11 @@ fn removing_an_entry_updates_the_generated_table() {
     let dir = &scratch.path;
     run(dir, &["init"]);
     run(dir, &["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
-    assert!(agents_md(dir).contains("repos/up"));
+    assert!(agents_md(dir).contains(&format!("{DEFAULT_REPOS}/up")));
 
     run(dir, &["remove", "up", "--yes"]);
     let text = agents_md(dir);
-    assert!(!text.contains("repos/up"), "{text}");
+    assert!(!text.contains(&format!("{DEFAULT_REPOS}/up")), "{text}");
     assert!(
         text.contains("No reference repositories configured"),
         "{text}"

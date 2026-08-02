@@ -43,9 +43,10 @@ pub(crate) fn add(request: AddRequest) -> Result<()> {
         usage,
         no_sync,
     } = request;
+    let url = expand_url(&url);
 
     let root = git::root()?;
-    let mut manifest = Manifest::load(&root)?;
+    let manifest = Manifest::load(&root)?;
 
     let name = match name {
         Some(name) => name,
@@ -58,27 +59,7 @@ pub(crate) fn add(request: AddRequest) -> Result<()> {
     }
 
     let path = path.unwrap_or_else(|| format!("{}/{name}", manifest.dir));
-    paths::validate_relative("path", &path)?;
-    if !paths::is_inside(&manifest.dir, &path) {
-        return Err(Error::failure(format!(
-            "path {path} is outside the clone directory {}/",
-            manifest.dir
-        )));
-    }
-
-    if let Some(existing) = manifest.repos.iter().find(|repo| repo.name == name) {
-        return Err(Error::failure(format!(
-            "`{name}` is already configured at {}. Use `agent-repos update {name} --to <ref>` \
-             to repoint it.",
-            existing.path
-        )));
-    }
-    if let Some(existing) = manifest.repos.iter().find(|repo| repo.path == path) {
-        return Err(Error::failure(format!(
-            "{path} is already used by `{}`",
-            existing.name
-        )));
-    }
+    validate_addition(&manifest, &name, &path)?;
 
     let dest = root.join(&path);
     if dest.exists() {
@@ -113,6 +94,12 @@ pub(crate) fn add(request: AddRequest) -> Result<()> {
 
     checkout(&url, &kind, &git_ref, track.as_deref(), &dest)?;
 
+    // Clones can proceed concurrently; only the shared manifest and generated
+    // instruction files are serialized.
+    let _lock = Manifest::lock(&root)?;
+    let mut manifest = Manifest::load(&root)?;
+    validate_addition(&manifest, &name, &path)?;
+
     manifest.repos.push(Repo {
         name: name.clone(),
         url,
@@ -138,6 +125,31 @@ pub(crate) fn add(request: AddRequest) -> Result<()> {
     Ok(())
 }
 
+fn validate_addition(manifest: &Manifest, name: &str, path: &str) -> Result<()> {
+    paths::validate_relative("path", path)?;
+    if !paths::is_inside(&manifest.dir, path) {
+        return Err(Error::failure(format!(
+            "path {path} is outside the clone directory {}/",
+            manifest.dir
+        )));
+    }
+
+    if let Some(existing) = manifest.repos.iter().find(|repo| repo.name == name) {
+        return Err(Error::failure(format!(
+            "`{name}` is already configured at {}. Use `agent-repos update {name} --to <ref>` \
+             to repoint it.",
+            existing.path
+        )));
+    }
+    if let Some(existing) = manifest.repos.iter().find(|repo| repo.path == path) {
+        return Err(Error::failure(format!(
+            "{path} is already used by `{}`",
+            existing.name
+        )));
+    }
+    Ok(())
+}
+
 /// Derives an entry name from a clone URL: the last path segment, with any
 /// `.git` suffix and trailing slash removed.
 fn name_from_url(url: &str) -> Result<String> {
@@ -157,6 +169,31 @@ fn name_from_url(url: &str) -> Result<String> {
     })
 }
 
+/// Expands concise forge references while leaving URLs, local paths and
+/// scp-style SSH remotes untouched.
+fn expand_url(input: &str) -> String {
+    let Some((forge, path)) = input.split_once(':') else {
+        return input.to_string();
+    };
+    if forge.contains('@')
+        || path.starts_with('/')
+        || path.split('/').filter(|part| !part.is_empty()).count() < 2
+    {
+        return input.to_string();
+    }
+
+    let host = match forge {
+        "github" => "github.com",
+        "gitlab" => "gitlab.com",
+        "gitea" => "gitea.com",
+        "codeberg" => "codeberg.org",
+        domain if domain.contains('.') => domain,
+        _ => return input.to_string(),
+    };
+
+    format!("https://{host}/{path}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,6 +208,40 @@ mod tests {
             ("/local/path/to/thing", "thing"),
         ] {
             assert_eq!(name_from_url(url).unwrap(), expected, "{url}");
+        }
+    }
+
+    #[test]
+    fn forge_shorthands_expand_to_https_urls() {
+        for (input, expected) in [
+            (
+                "github:Effect-TS/effect",
+                "https://github.com/Effect-TS/effect",
+            ),
+            (
+                "gitlab:gitlab-org/gitlab",
+                "https://gitlab.com/gitlab-org/gitlab",
+            ),
+            ("gitea:go-gitea/gitea", "https://gitea.com/go-gitea/gitea"),
+            (
+                "codeberg:forgejo/forgejo",
+                "https://codeberg.org/forgejo/forgejo",
+            ),
+            (
+                "codeberg.org:forgejo/forgejo",
+                "https://codeberg.org/forgejo/forgejo",
+            ),
+        ] {
+            assert_eq!(expand_url(input), expected, "{input}");
+        }
+
+        for url in [
+            "https://example.com/owner/repo",
+            "ssh://git@example.com/owner/repo",
+            "git@example.com:owner/repo",
+            "/local/path/to/repo",
+        ] {
+            assert_eq!(expand_url(url), url);
         }
     }
 }

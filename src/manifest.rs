@@ -1,4 +1,5 @@
-//! The `.agent-repos` manifest: a deliberately small subset of TOML.
+//! The `.agent-repos/manifest.toml` manifest: a deliberately small subset of
+//! TOML.
 //!
 //! Supported: `#` comments, top-level `key = value` for strings, integers,
 //! booleans and arrays of strings, and `[[repo]]` array-of-tables. Strings are
@@ -12,14 +13,16 @@
 //! are preserved across a rewrite. A trailing comment on a `key = value` line
 //! is parsed and discarded.
 
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::paths;
 
-pub(crate) const FILE_NAME: &str = ".agent-repos";
-pub(crate) const DEFAULT_DIR: &str = "repos";
+pub(crate) const CONTROL_DIR: &str = ".agent-repos";
+pub(crate) const MANIFEST_PATH: &str = ".agent-repos/manifest.toml";
+pub(crate) const LOCK_PATH: &str = ".agent-repos/write.lock";
+pub(crate) const DEFAULT_DIR: &str = ".agent-repos/repos";
 pub(crate) const DEFAULT_TARGET: &str = "AGENTS.md";
 
 /// Bumped only for a breaking format change.
@@ -89,6 +92,15 @@ pub(crate) struct Manifest {
     footer: Vec<String>,
 }
 
+/// Exclusive ownership of a manifest read-modify-write operation.
+///
+/// The persistent file is ignored by Git. The operating system releases its
+/// lock automatically when the file handle closes, including after a crash.
+#[derive(Debug)]
+pub(crate) struct ManifestLock {
+    _file: File,
+}
+
 impl Manifest {
     pub(crate) fn new(dir: String, targets: Vec<String>) -> Self {
         Self {
@@ -101,7 +113,26 @@ impl Manifest {
     }
 
     pub(crate) fn path(root: &Path) -> PathBuf {
-        root.join(FILE_NAME)
+        root.join(MANIFEST_PATH)
+    }
+
+    pub(crate) fn lock(root: &Path) -> Result<ManifestLock> {
+        let control_dir = root.join(CONTROL_DIR);
+        fs::create_dir_all(&control_dir).map_err(|err| {
+            Error::failure(format!("could not create {}: {err}", control_dir.display()))
+        })?;
+
+        let path = root.join(LOCK_PATH);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|err| Error::failure(format!("could not open {}: {err}", path.display())))?;
+        file.lock()
+            .map_err(|err| Error::failure(format!("could not lock {}: {err}", path.display())))?;
+        Ok(ManifestLock { _file: file })
     }
 
     pub(crate) fn load(root: &Path) -> Result<Self> {
@@ -112,7 +143,7 @@ impl Manifest {
                 file.display()
             ))
         })?;
-        Self::parse(&text).map_err(|err| Error::failure(format!("{}: {err}", FILE_NAME)))
+        Self::parse(&text).map_err(|err| Error::failure(format!("{}: {err}", MANIFEST_PATH)))
     }
 
     pub(crate) fn save(&self, root: &Path) -> Result<()> {
@@ -692,7 +723,7 @@ track = "main"
             )
         };
         let text = format!(
-            "version = 1\n{}{}",
+            "version = 1\ndir = \"repos\"\n{}{}",
             entry("a", "repos/a"),
             entry("a", "repos/b")
         );
@@ -704,7 +735,7 @@ track = "main"
         );
 
         let text = format!(
-            "version = 1\n{}{}",
+            "version = 1\ndir = \"repos\"\n{}{}",
             entry("a", "repos/a"),
             entry("b", "repos/a")
         );
@@ -736,7 +767,7 @@ track = "main"
 
     #[test]
     fn track_requires_a_commit_pin() {
-        let text = "version = 1\n[[repo]]\nname = \"a\"\nurl = \"u\"\nref = \"v1\"\n\
+        let text = "version = 1\ndir = \"repos\"\n[[repo]]\nname = \"a\"\nurl = \"u\"\nref = \"v1\"\n\
                     kind = \"tag\"\npath = \"repos/a\"\ntrack = \"main\"\n";
         let err = Manifest::parse(text).unwrap_err();
         assert!(

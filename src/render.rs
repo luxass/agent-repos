@@ -45,20 +45,21 @@ fn cell(repo: &Repo, field: &str) -> String {
 /// Prose telling an agent how to treat the clone directory.
 pub(crate) fn guidance(dir: &str) -> String {
     format!(
-        "## Agent reference repositories\n\
+        "## Vendored Repositories\n\
          \n\
-         `{dir}/` holds pinned clones of external repositories, managed by \
-         [agent-repos](https://github.com/luxass/agent-repos).\n\
+         This project vendors external repositories under `{dir}/` as read-only \
+         reference material for coding agents.\n\
          \n\
-         - Treat `{dir}/` as **read-only reference**. Do not edit anything under it, \
-         and do not commit it — it is gitignored on purpose.\n\
-         - Before guessing at an API, a pattern, a test style or an integration \
-         detail for one of these dependencies, read the real source under `{dir}/`.\n\
-         - Each clone is pinned to an exact ref recorded in `.agent-repos`, so what \
-         you read is the version this project actually depends on.\n\
-         - If a reference repository has its own AGENTS.md, README or docs, read \
-         those before relying on implementation details.\n\
-         - If a clone is missing, run `agent-repos restore` rather than cloning by hand."
+         - Prefer examples and patterns from the vendored source code over generated \
+         guesses or web search results.\n\
+         - Do not edit files under `{dir}/` unless explicitly asked.\n\
+         - Do not import from `{dir}/`; application code must continue importing from \
+         normal package dependencies.\n\
+         - Read each repository's own AGENTS.md, README, and docs before relying on \
+         implementation details.\n\
+         - Each clone is pinned to the ref recorded in \
+         `.agent-repos/manifest.toml`. If one is missing, run \
+         `agent-repos restore` rather than cloning it by hand."
     )
 }
 
@@ -244,8 +245,14 @@ mod tests {
     #[test]
     fn guidance_names_the_configured_directory() {
         let text = guidance("vendor");
+        assert!(text.starts_with("## Vendored Repositories"));
         assert!(text.contains("`vendor/`"));
-        assert!(!text.contains("repos/"), "should not hardcode the default");
+        assert!(
+            !text.contains("under `repos/`"),
+            "should not hardcode the default"
+        );
+        assert!(text.contains("Do not edit files under"));
+        assert!(text.contains("Do not import from"));
     }
 
     #[test]

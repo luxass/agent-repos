@@ -5,11 +5,13 @@
 //! of two things — parse and validate flags, or dispatch — which is what makes
 //! the whole surface testable without a repository to run against.
 
-use crate::args::Parser;
+mod args;
+
 use crate::commands::{AddRequest, RefSpec, UpdateRequest};
 use crate::error::{Error, Result};
 use crate::sync::SyncMode;
 use crate::{commands, completions, sync};
+use args::Parser;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -20,8 +22,8 @@ Usage: agent-repos <command> [options]
 
 Commands:
   init    [--dir DIR] [--target FILE]... [--no-instructions]
-      Prepare the current Git repository: write .agent-repos, ignore the
-      clone directory, and seed the agent instruction blocks.
+      Prepare the current Git repository: write .agent-repos/manifest.toml,
+      ignore the clone directory and write lock, and seed the instruction blocks.
 
   add     <url> [--tag T | --branch B | --commit SHA]
           [--name N] [--path P] [--desc TEXT] [--use TEXT] [--no-sync]
@@ -50,8 +52,8 @@ Commands:
 
 Examples:
   agent-repos init
-  agent-repos add https://github.com/Effect-TS/effect --tag v3.12.0
-  agent-repos add https://github.com/owner/repo --branch main
+  agent-repos add github:Effect-TS/effect --tag v3.12.0
+  agent-repos add git.example.com:owner/repo --branch main
   agent-repos update --all --latest
   agent-repos sync --check
 ";

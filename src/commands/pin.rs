@@ -8,6 +8,7 @@ use super::{auto_sync, find_index, short};
 
 pub(crate) fn pin(name: String) -> Result<()> {
     let root = git::root()?;
+    let _lock = Manifest::lock(&root)?;
     let mut manifest = Manifest::load(&root)?;
     let index = find_index(&manifest, &name)?;
 

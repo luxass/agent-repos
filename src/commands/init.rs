@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::manifest::{DEFAULT_DIR, DEFAULT_TARGET, Manifest};
+use crate::manifest::{DEFAULT_DIR, DEFAULT_TARGET, LOCK_PATH, MANIFEST_PATH, Manifest};
 use crate::{fsx, git, paths, ui};
 
 /// Files that are treated as agent instructions when none are configured.
@@ -12,6 +12,7 @@ const KNOWN_TARGETS: &[&str] = &["AGENTS.md", "CLAUDE.md", "AGENT.md"];
 
 pub(crate) fn init(dir: Option<String>, targets: Vec<String>, no_instructions: bool) -> Result<()> {
     let root = git::root()?;
+    let _lock = Manifest::lock(&root)?;
     let existing = Manifest::path(&root).exists();
 
     // Re-running init must not discard entries someone already added.
@@ -48,15 +49,19 @@ pub(crate) fn init(dir: Option<String>, targets: Vec<String>, no_instructions: b
 
     // The clone directory is local-only; the manifest is what gets committed,
     // because that is what `agent-repos restore` reproduces from.
-    let ignored = ensure_gitignore(&root, &format!("{}/", manifest.dir))?;
+    let ignored_repos = ensure_gitignore(&root, &format!("{}/", manifest.dir))?;
+    let ignored_lock = ensure_gitignore(&root, LOCK_PATH)?;
 
     ui::log(&format!(
         "{} {}",
         if existing { "updated" } else { "created" },
         Manifest::path(&root).display()
     ));
-    if ignored {
+    if ignored_repos {
         ui::log(&format!("added {}/ to .gitignore", manifest.dir));
+    }
+    if ignored_lock {
+        ui::log(&format!("added {LOCK_PATH} to .gitignore"));
     }
     if manifest.targets.is_empty() {
         ui::log("no instruction files configured");
@@ -66,7 +71,9 @@ pub(crate) fn init(dir: Option<String>, targets: Vec<String>, no_instructions: b
             manifest.targets.join(", ")
         ));
     }
-    ui::log("commit .agent-repos so teammates can run `agent-repos restore`");
+    ui::log(&format!(
+        "commit {MANIFEST_PATH} so teammates can run `agent-repos restore`"
+    ));
 
     Ok(())
 }

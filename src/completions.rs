@@ -41,8 +41,8 @@ fn fish() -> String {
          \n\
          function __agent_repos_names\n    \
              set -l root (git rev-parse --show-toplevel 2>/dev/null)\n    \
-             test -n \"$root\"; and test -f \"$root/.agent-repos\"; or return\n    \
-             string match -rg '^name = \"(.*)\"$' < \"$root/.agent-repos\"\n\
+             test -n \"$root\"; and test -f \"$root/.agent-repos/manifest.toml\"; or return\n    \
+             string match -rg '^name = \"(.*)\"$' < \"$root/.agent-repos/manifest.toml\"\n\
          end\n\
          \n\
          complete -c agent-repos -f\n",
@@ -107,8 +107,8 @@ fn bash() -> String {
              case \"$prev\" in\n        \
                  {name_taking})\n            \
                      root=$(git rev-parse --show-toplevel 2>/dev/null)\n            \
-                     if [ -n \"$root\" ] && [ -f \"$root/.agent-repos\" ]; then\n                \
-                         names=$(sed -n 's/^name = \"\\(.*\\)\"$/\\1/p' \"$root/.agent-repos\")\n                \
+                     if [ -n \"$root\" ] && [ -f \"$root/.agent-repos/manifest.toml\" ]; then\n                \
+                         names=$(sed -n 's/^name = \"\\(.*\\)\"$/\\1/p' \"$root/.agent-repos/manifest.toml\")\n                \
                          COMPREPLY=($(compgen -W \"$names\" -- \"$cur\"))\n            \
                      fi\n            \
                      ;;\n        \
@@ -140,8 +140,8 @@ fn zsh() -> String {
          _agent_repos_names() {{\n    \
              local root\n    \
              root=$(git rev-parse --show-toplevel 2>/dev/null) || return\n    \
-             [[ -f $root/.agent-repos ]] || return\n    \
-             sed -n 's/^name = \"\\(.*\\)\"$/\\1/p' \"$root/.agent-repos\"\n\
+             [[ -f $root/.agent-repos/manifest.toml ]] || return\n    \
+             sed -n 's/^name = \"\\(.*\\)\"$/\\1/p' \"$root/.agent-repos/manifest.toml\"\n\
          }}\n\
          \n\
          _agent_repos() {{\n    \

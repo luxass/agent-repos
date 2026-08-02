@@ -1,7 +1,8 @@
 # AGENT-REPOS
 
-A CLI that maintains pinned clones of external repositories under `repos/`, so
-coding agents read a dependency's real source instead of guessing at its API.
+A CLI that maintains pinned clones of external repositories under
+`.agent-repos/repos/`, so coding agents read a dependency's real source instead
+of guessing at its API.
 
 Written in Rust with **zero dependencies**. The whole point of the project is a
 tiny, statically-linked binary that works everywhere.
@@ -60,15 +61,16 @@ nm --print-size --size-sort --radix=d \
 agent-repos/
 |-- src/
 |   |-- main.rs           # Module wiring and the exit-code path. Keep it tiny
-|   |-- cli.rs            # argv -> a typed call: help, dispatch, flag parsing
-|   |-- args.rs           # Hand-rolled argument parser
+|   |-- cli/
+|   |   |-- mod.rs        # argv -> a typed call: help, dispatch, flag parsing
+|   |   `-- args.rs       # Hand-rolled argument parser
 |   |-- error.rs          # Error type and ExitCode
 |   |-- ui.rs             # stderr logging, colour, confirmation prompts
 |   |-- commands/        # One module per command, matching the CLI surface
 |   |   |-- mod.rs        #   re-exports plus the few genuinely shared helpers
 |   |   `-- add.rs, init.rs, list.rs, pin.rs, remove.rs,
 |   |                     restore.rs, status.rs, update.rs
-|   |-- manifest.rs       # .agent-repos TOML subset parse/write
+|   |-- manifest.rs       # .agent-repos/manifest.toml parse/write and locking
 |   |-- git.rs            # std::process::Command wrappers around git
 |   |-- sync.rs           # AGENTS.md block scanning and rewriting
 |   |-- render.rs         # Block body generation (markdown)
@@ -88,8 +90,8 @@ agent-repos/
 
 | Task | Location |
 | --- | --- |
-| Add a command or flag | `src/cli.rs` — the command table, its parser, and `HELP` — then `src/completions.rs` |
-| Change argument parsing behaviour | `src/args.rs` |
+| Add a command or flag | `src/cli/mod.rs` — the command table, its parser, and `HELP` — then `src/completions.rs` |
+| Change argument parsing behaviour | `src/cli/args.rs` |
 | Change an exit code | `src/error.rs` |
 | Change terminal output, colour or prompts | `src/ui.rs` |
 | Change the manifest format | `src/manifest.rs` (bump `FORMAT_VERSION` if breaking) |
@@ -133,7 +135,7 @@ cargo build --release && ls -l target/release/agent-repos
 - Colour only on a TTY, and never when `NO_COLOR` is set.
 - Do not add a helper before something calls it. An uncalled function fails
   `-D warnings`, and suppressing that costs more than waiting.
-- `main.rs` stays wiring only. Argument handling belongs in `cli.rs`, work
+- `main.rs` stays wiring only. Argument handling belongs in `cli/mod.rs`, work
   belongs in `src/commands/`. If you find yourself adding a `use` in the middle
   of a file to make an edit fit, the edit is in the wrong file.
 - A new command is a new file in `src/commands/`, re-exported from its

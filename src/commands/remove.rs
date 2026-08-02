@@ -11,6 +11,7 @@ use super::{auto_sync, find_index};
 
 pub(crate) fn remove(name: String, keep_files: bool, yes: bool) -> Result<()> {
     let root = git::root()?;
+    let _lock = Manifest::lock(&root)?;
     let mut manifest = Manifest::load(&root)?;
     let index = find_index(&manifest, &name)?;
 

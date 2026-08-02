@@ -271,6 +271,7 @@ pub(crate) fn apply(
 
 pub(crate) fn sync(targets: Vec<String>, mode: SyncMode) -> Result<()> {
     let root = crate::git::root()?;
+    let _lock = Manifest::lock(&root)?;
     let manifest = Manifest::load(&root)?;
 
     let targets = if targets.is_empty() {
@@ -280,7 +281,10 @@ pub(crate) fn sync(targets: Vec<String>, mode: SyncMode) -> Result<()> {
     };
 
     if targets.is_empty() {
-        ui::log("no instruction files configured (see `targets` in .agent-repos)");
+        ui::log(
+            "no instruction files configured (see `targets` in \
+             .agent-repos/manifest.toml)",
+        );
         return Ok(());
     }
 
@@ -429,7 +433,7 @@ mod tests {
         assert!(out.starts_with("# Project\n\n"), "{out}");
         assert!(out.contains("<!-- agent-repos:guidance -->"));
         assert!(out.contains("<!-- agent-repos:repos -->"));
-        assert!(out.contains("Agent reference repositories"));
+        assert!(out.contains("Vendored Repositories"));
 
         // And appending happens only once.
         let again = desired(&out, &manifest(), "AGENTS.md").unwrap();

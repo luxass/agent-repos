@@ -5,27 +5,29 @@ repository, so coding agents read the real source instead of guessing at an
 API.
 
 If your backend is built on Effect, you clone `Effect-TS/effect` at *the exact
-version you depend on* into `repos/effect`. When an agent needs a signature, a
-`Layer` pattern, or the way a test is written, it reads the source you actually
-run — not a half-remembered version of it.
+version you depend on* into `.agent-repos/repos/effect`. When an agent needs a
+signature, a `Layer` pattern, or the way a test is written, it reads the source
+you actually run — not a half-remembered version of it.
 
 ```sh
-agent-repos add https://github.com/Effect-TS/effect --tag v3.12.0 \
+agent-repos add github:Effect-TS/effect --tag v3.12.0 \
   --desc "Effect runtime this service is built on" \
   --use "API signatures, Layer/Runtime composition, test style"
 ```
 
-That records the pin in `.agent-repos`, clones the tag into `repos/effect`, and
-refreshes the generated block in your `AGENTS.md`.
+That records the pin in `.agent-repos/manifest.toml`, clones the tag into
+`.agent-repos/repos/effect`, and refreshes the generated block in your
+`AGENTS.md`.
 
 ## Why
 
 - **Pinned, never guessed.** Every entry records a tag, branch or commit. The
   ref is never inferred from `package.json` or a lockfile. You pin it, or the
   default branch's current head commit gets pinned and printed.
-- **Reproducible.** `.agent-repos` is committed; `repos/` is gitignored. A
-  teammate clones the project, runs `agent-repos restore`, and gets every
-  reference repo at the exact same commits.
+- **Reproducible.** `.agent-repos/manifest.toml` is committed;
+  `.agent-repos/repos/` is gitignored. A teammate clones the project, runs
+  `agent-repos restore`, and gets every reference repo at the exact same
+  commits.
 - **Your agent instructions stay current.** `AGENTS.md` and `CLAUDE.md` carry
   comment-delimited blocks that `agent-repos sync` refills from the manifest —
   including *why* each repo is there and what to consult it for.
@@ -68,13 +70,43 @@ agent-repos completions <fish|bash|zsh>
 
 `--to <ref>` repoints any entry to a different tag, branch or commit.
 
+### Repository URLs
+
+Full Git URLs, local paths, and SCP-style SSH remotes work as usual. Common
+forges also have short forms:
+
+```sh
+agent-repos add github:owner/repo
+agent-repos add gitlab:group/repo
+agent-repos add gitea:owner/repo
+agent-repos add codeberg:owner/repo
+```
+
+For another hosted forge, use its domain before the colon:
+
+```sh
+agent-repos add git.example.com:owner/repo
+```
+
+Short forms expand to HTTPS URLs before being recorded in
+`.agent-repos/manifest.toml`.
+
 ### Manifest
 
-`.agent-repos` lives at the repository root and is meant to be committed.
+All tool-owned files live under `.agent-repos/`:
+
+```text
+.agent-repos/
+├── manifest.toml  # committed
+├── write.lock     # ignored; coordinates manifest writes
+└── repos/         # ignored; pinned reference checkouts
+```
+
+Only `.agent-repos/manifest.toml` is meant to be committed.
 
 ```toml
 version = 1
-dir = "repos"
+dir = ".agent-repos/repos"
 targets = ["AGENTS.md", "CLAUDE.md"]
 
 [[repo]]
@@ -82,7 +114,7 @@ name = "effect"
 url  = "https://github.com/Effect-TS/effect"
 ref  = "v3.12.0"
 kind = "tag"
-path = "repos/effect"
+path = ".agent-repos/repos/effect"
 desc = "Effect runtime and stdlib this service is built on"
 use  = "API signatures, Layer/Runtime composition, test style"
 ```
@@ -111,7 +143,7 @@ Place any subset of these in `AGENTS.md` or `CLAUDE.md`, anywhere in the file.
 
 | Block | Attributes | Renders |
 | --- | --- | --- |
-| `guidance` | — | Standard prose on treating `repos/` as read-only reference |
+| `guidance` | — | Standard prose on treating the configured clone directory as read-only reference |
 | `repos` | `fields=`, `format=table\|list` | Every configured repo |
 | `repo` | `name=` (required) | One repo's detail |
 | `paths` | — | Bare newline-separated paths |
