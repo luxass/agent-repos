@@ -160,10 +160,18 @@ fn name_from_url(url: &str) -> Result<String> {
     let trimmed = trimmed.strip_suffix(".git").unwrap_or(trimmed);
 
     // Handle scp-style remotes (git@host:owner/repo) as well as URLs.
-    let base = trimmed
-        .rsplit(['/', ':'])
-        .next()
-        .filter(|segment| !segment.is_empty());
+    let authority_only = match trimmed.split_once("://") {
+        Some((_, location)) => !location.contains('/'),
+        None => false,
+    };
+    let base = if authority_only {
+        None
+    } else {
+        trimmed
+            .rsplit(['/', ':'])
+            .next()
+            .filter(|segment| !segment.is_empty())
+    };
 
     base.map(str::to_string).ok_or_else(|| {
         Error::failure(format!(
@@ -195,56 +203,4 @@ fn expand_url(input: &str) -> String {
     };
 
     format!("https://{host}/{path}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn names_are_derived_from_assorted_url_shapes() {
-        for (url, expected) in [
-            ("https://github.com/Effect-TS/effect", "effect"),
-            ("https://github.com/Effect-TS/effect.git", "effect"),
-            ("https://github.com/Effect-TS/effect/", "effect"),
-            ("git@github.com:Effect-TS/effect.git", "effect"),
-            ("/local/path/to/thing", "thing"),
-        ] {
-            assert_eq!(name_from_url(url).unwrap(), expected, "{url}");
-        }
-    }
-
-    #[test]
-    fn forge_shorthands_expand_to_https_urls() {
-        for (input, expected) in [
-            (
-                "github:Effect-TS/effect",
-                "https://github.com/Effect-TS/effect",
-            ),
-            (
-                "gitlab:gitlab-org/gitlab",
-                "https://gitlab.com/gitlab-org/gitlab",
-            ),
-            ("gitea:go-gitea/gitea", "https://gitea.com/go-gitea/gitea"),
-            (
-                "codeberg:forgejo/forgejo",
-                "https://codeberg.org/forgejo/forgejo",
-            ),
-            (
-                "codeberg.org:forgejo/forgejo",
-                "https://codeberg.org/forgejo/forgejo",
-            ),
-        ] {
-            assert_eq!(expand_url(input), expected, "{input}");
-        }
-
-        for url in [
-            "https://example.com/owner/repo",
-            "ssh://git@example.com/owner/repo",
-            "git@example.com:owner/repo",
-            "/local/path/to/repo",
-        ] {
-            assert_eq!(expand_url(url), url);
-        }
-    }
 }

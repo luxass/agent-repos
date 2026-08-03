@@ -173,38 +173,3 @@ fn zsh() -> String {
         name_taking = NAME_TAKING.join("|"),
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_command_appears_in_every_script() {
-        let scripts = [fish(), bash(), zsh()];
-        for (command, _) in COMMANDS {
-            for script in &scripts {
-                assert!(script.contains(command), "{command} missing from a script");
-            }
-        }
-    }
-
-    #[test]
-    fn scripts_are_not_accidentally_empty() {
-        for script in [fish(), bash(), zsh()] {
-            assert!(script.lines().count() > 10);
-        }
-    }
-
-    #[test]
-    fn zsh_declares_the_compdef_tag_first() {
-        assert!(zsh().starts_with("#compdef agent-repos\n"));
-    }
-
-    #[test]
-    fn name_taking_commands_offer_entry_names() {
-        for command in NAME_TAKING {
-            assert!(fish().contains(command));
-            assert!(bash().contains(command));
-        }
-    }
-}

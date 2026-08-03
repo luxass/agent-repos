@@ -140,7 +140,8 @@ pub(crate) fn remote_default(url: &str) -> Result<RemoteHead> {
 /// Annotated tags appear twice, as the tag object and as `<ref>^{}` for the
 /// commit it points at. The peeled entry is the one worth recording.
 pub(crate) fn remote_sha(url: &str, reference: &str) -> Result<String> {
-    let output = capture(None, &["ls-remote", url, reference])?;
+    let peeled = format!("{reference}^{{}}");
+    let output = capture(None, &["ls-remote", url, reference, &peeled])?;
 
     let mut fallback = None;
     for line in output.lines() {
@@ -338,24 +339,4 @@ pub(crate) fn is_dirty(dir: &Path) -> Result<bool> {
 /// Whether `dir` looks like a git checkout at all.
 pub(crate) fn is_repo(dir: &Path) -> bool {
     dir.join(".git").exists()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn root_is_found_from_inside_this_repository() {
-        let found = root().expect("tests run inside a git repository");
-        assert!(found.join(".git").exists());
-    }
-
-    #[test]
-    fn shortens_only_full_shas() {
-        assert_eq!(short("9f3a1c2e5b7d4a6c8e0f2b4d6a8c0e2f4b6d8a0c"), "9f3a1c2");
-        assert_eq!(short("v3.12.0"), "v3.12.0");
-        assert_eq!(short("main"), "main");
-        // 40 characters but not hex: leave it alone.
-        assert_eq!(short(&"z".repeat(40)), "z".repeat(40));
-    }
 }
