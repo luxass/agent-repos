@@ -1,0 +1,32 @@
+name: Update Homebrew Tap
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  update-formula:
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: luxass/shared-workflows/.github/workflows/reusable-homebrew-tap.yaml@b55f08ac1aca5a4a3ae198bd8a7197c0157b3ef7 # v0.10.0
+    with:
+      tap-repository: luxass/homebrew-tap
+      formula-path: Formula/agent-repos.rb
+      formula-name: agent-repos
+      environment: homebrew-tap
+      targets: '["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]'
+    secrets:
+      # These two secrets are from the "homebrew-tap" environment. But since you can't
+      # specify an environment for a reusable workflow, we need to pass them explicitly here.
+      #
+      # And then in the reusable workflow, we use the "environment" input to specify
+      # that the job should run in the "homebrew-tap" environment, which has access to these secrets.
+      app-id: ${{ secrets.HOMEBREW_TAP_APP_ID }}
+      app-private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
