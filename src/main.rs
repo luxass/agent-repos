@@ -11,7 +11,6 @@
 
 mod cli;
 mod commands;
-mod completions;
 mod error;
 mod fsx;
 mod git;

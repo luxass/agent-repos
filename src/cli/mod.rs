@@ -6,11 +6,12 @@
 //! the whole surface testable without a repository to run against.
 
 mod args;
+mod completions;
 
 use crate::commands::{AddRequest, RefSpec, UpdateRequest};
 use crate::error::{Error, Result};
 use crate::sync::SyncMode;
-use crate::{commands, completions, sync};
+use crate::{commands, sync};
 use args::Parser;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
