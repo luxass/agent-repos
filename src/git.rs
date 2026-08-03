@@ -66,6 +66,14 @@ fn run(dir: Option<&Path>, args: &[&str]) -> Result<()> {
     }
 }
 
+/// Moves a clone onto `reference` without putting it on a local branch.
+///
+/// Every reference checkout is detached on purpose: there is no branch to be
+/// on, and nothing here ever commits.
+fn detach(dir: &Path, reference: &str) -> Result<()> {
+    run(Some(dir), &["checkout", "--quiet", "--detach", reference])
+}
+
 /// The root of the repository containing the working directory.
 pub(crate) fn root() -> Result<PathBuf> {
     let output = Command::new("git")
@@ -181,10 +189,7 @@ pub(crate) fn clone_commit(url: &str, sha: &str, track: Option<&str>, dest: &Pat
     run(Some(dest), &["remote", "add", "origin", url])?;
 
     if try_run(Some(dest), &["fetch", "--depth", "1", "origin", sha])? {
-        return run(
-            Some(dest),
-            &["checkout", "--quiet", "--detach", "FETCH_HEAD"],
-        );
+        return detach(dest, "FETCH_HEAD");
     }
 
     let Some(branch) = track else {
@@ -202,12 +207,12 @@ pub(crate) fn clone_commit(url: &str, sha: &str, track: Option<&str>, dest: &Pat
                 &["cat-file", "-e", &format!("{sha}^{{commit}}")],
             )?
         {
-            return run(Some(dest), &["checkout", "--quiet", "--detach", sha]);
+            return detach(dest, sha);
         }
     }
 
     run(Some(dest), &["fetch", "--unshallow", "origin", branch])?;
-    run(Some(dest), &["checkout", "--quiet", "--detach", sha])
+    detach(dest, sha)
 }
 
 /// Every tag on a remote, de-duplicated. Peeled `^{}` entries are filtered out
@@ -264,7 +269,7 @@ pub(crate) fn fetch_commit(dir: &Path, sha: &str) -> Result<()> {
             "could not fetch commit {sha}; the remote may have pruned it"
         )));
     }
-    run(Some(dir), &["checkout", "--quiet", "--detach", sha])
+    detach(dir, sha)
 }
 
 /// Moves an existing clone onto a tag.
@@ -280,15 +285,7 @@ pub(crate) fn fetch_tag(dir: &Path, tag: &str) -> Result<()> {
             &format!("refs/tags/{tag}:refs/tags/{tag}"),
         ],
     )?;
-    run(
-        Some(dir),
-        &[
-            "checkout",
-            "--quiet",
-            "--detach",
-            &format!("refs/tags/{tag}"),
-        ],
-    )
+    detach(dir, &format!("refs/tags/{tag}"))
 }
 
 /// Fast-forwards a branch checkout to the remote tip.
@@ -301,10 +298,7 @@ pub(crate) fn fetch_and_reset(dir: &Path, branch: &str) -> Result<()> {
         Some(dir),
         &["fetch", "--depth", "1", "--force", "origin", branch],
     )?;
-    run(
-        Some(dir),
-        &["checkout", "--quiet", "--detach", "FETCH_HEAD"],
-    )
+    detach(dir, "FETCH_HEAD")
 }
 
 #[cfg(test)]
