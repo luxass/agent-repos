@@ -2,9 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::manifest::{Kind, Manifest, Repo};
-use crate::{git, paths, ui};
-
-use super::{auto_sync, checkout, short};
+use crate::{git, paths, sync, ui};
 
 /// Which ref an entry should be pinned to. Never inferred from a package
 /// manifest or lockfile: either the user says so, or the default branch's
@@ -85,43 +83,48 @@ pub(crate) fn add(request: AddRequest) -> Result<()> {
             ui::log(&format!(
                 "pinning {} at {} (head of {})",
                 name,
-                short(&head.sha),
+                git::short(&head.sha),
                 head.branch
             ));
             (Kind::Commit, head.sha, Some(head.branch))
         }
     };
 
-    checkout(&url, &kind, &git_ref, track.as_deref(), &dest)?;
+    let repo = Repo {
+        name,
+        url,
+        git_ref,
+        kind,
+        path,
+        track,
+        desc,
+        usage,
+        comments: Vec::new(),
+    };
+    git::clone_pinned(&repo, &dest)?;
+
+    let summary = format!(
+        "added {} at {} ({} {})",
+        repo.name,
+        repo.path,
+        repo.kind.as_str(),
+        git::short(&repo.git_ref)
+    );
 
     // Clones can proceed concurrently; only the shared manifest and generated
     // instruction files are serialized.
     let _lock = Manifest::lock(&root)?;
     let mut manifest = Manifest::load(&root)?;
-    validate_addition(&manifest, &name, &path)?;
+    validate_addition(&manifest, &repo.name, &repo.path)?;
 
-    manifest.repos.push(Repo {
-        name: name.clone(),
-        url,
-        git_ref: git_ref.clone(),
-        kind,
-        path: path.clone(),
-        track,
-        desc,
-        usage,
-        comments: Vec::new(),
-    });
+    manifest.repos.push(repo);
     manifest.save(&root)?;
 
     if !no_sync {
-        auto_sync(&root, &manifest);
+        sync::refresh(&root, &manifest);
     }
 
-    ui::log(&format!(
-        "added {name} at {path} ({} {})",
-        kind.as_str(),
-        short(&git_ref)
-    ));
+    ui::log(&summary);
     Ok(())
 }
 

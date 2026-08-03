@@ -2,15 +2,13 @@
 
 use crate::error::{Error, Result};
 use crate::manifest::{Kind, Manifest};
-use crate::{git, ui};
-
-use super::{auto_sync, find_index, short};
+use crate::{git, sync, ui};
 
 pub(crate) fn pin(name: String) -> Result<()> {
     let root = git::root()?;
     let _lock = Manifest::lock(&root)?;
     let mut manifest = Manifest::load(&root)?;
-    let index = find_index(&manifest, &name)?;
+    let index = manifest.position(&name)?;
 
     let dir = root.join(&manifest.repos[index].path);
     if !git::is_repo(&dir) {
@@ -23,7 +21,10 @@ pub(crate) fn pin(name: String) -> Result<()> {
     let repo = &mut manifest.repos[index];
 
     if repo.kind == Kind::Commit && repo.git_ref == head {
-        ui::log(&format!("{name} is already pinned to {}", short(&head)));
+        ui::log(&format!(
+            "{name} is already pinned to {}",
+            git::short(&head)
+        ));
         return Ok(());
     }
 
@@ -37,12 +38,12 @@ pub(crate) fn pin(name: String) -> Result<()> {
     repo.git_ref = head.clone();
 
     manifest.save(&root)?;
-    auto_sync(&root, &manifest);
+    sync::refresh(&root, &manifest);
 
     ui::log(&format!(
         "pinned {name} to {} (was {})",
-        short(&head),
-        short(&previous)
+        git::short(&head),
+        git::short(&previous)
     ));
     Ok(())
 }

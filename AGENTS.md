@@ -48,9 +48,9 @@ growth.
 | CLI dispatch, help, and command flags | `src/cli/mod.rs`, then update `src/cli/completions.rs` |
 | Hand-written argument parsing | `src/cli/args.rs` |
 | Command behavior | `src/commands/<command>.rs`; one file per command |
-| Helpers shared by multiple commands | `src/commands/mod.rs`; do not use it as a drawer |
-| Manifest format and writer locking | `src/manifest.rs`; bump `FORMAT_VERSION` for breaking formats |
-| Git subprocess behavior | `src/git.rs` |
+| Command registration | `src/commands/mod.rs`; declarations and re-exports only |
+| Manifest format, lookup, and writer locking | `src/manifest.rs`; bump `FORMAT_VERSION` for breaking formats |
+| Git subprocess behavior, and how a pin maps to it | `src/git.rs` |
 | Generated instruction blocks | Render in `src/render.rs`, dispatch in `src/sync.rs` |
 | Terminal diagnostics and prompts | `src/ui.rs` |
 | JSON output, versions, and paths | `src/json.rs`, `src/version.rs`, `src/paths.rs` |
@@ -78,8 +78,9 @@ adds without losing entries.
 - Use `#[expect(lint, reason = "...")]`, not `#[allow(...)]`.
 - Keep `main.rs` as wiring. Argument handling belongs in `cli/`; work belongs
   in `commands/`.
-- Add a helper only when something calls it. Put it in `commands/mod.rs` only
-  after a second command needs it.
+- Add a helper only when something calls it. When a second command needs one,
+  it goes with the thing it operates on — the manifest, git, or the instruction
+  files — not into `commands/mod.rs`, which stays registration only.
 - More than two adjacent parameters of the same type need a request struct.
   Mutually exclusive booleans usually need an enum.
 - Diagnostics go to stderr through `ui::log` or `ui::error`. Reserve stdout for

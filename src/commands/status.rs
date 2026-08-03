@@ -4,8 +4,6 @@ use crate::error::Result;
 use crate::manifest::{Kind, Manifest};
 use crate::{git, ui};
 
-use super::short;
-
 pub(crate) fn status() -> Result<()> {
     let root = git::root()?;
     let manifest = Manifest::load(&root)?;
@@ -36,18 +34,11 @@ pub(crate) fn status() -> Result<()> {
 
         let head = git::head_sha(&dir)?;
         let dirty = git::is_dirty(&dir)?;
+        let off_pin = git::drifted(&dir, repo, &head);
 
-        // What the pin says the checkout should be sitting on.
-        let expected = match repo.kind {
-            Kind::Commit => Some(repo.git_ref.clone()),
-            Kind::Tag => git::local_sha(&dir, &format!("refs/tags/{}", repo.git_ref)),
-            Kind::Branch => None,
-        };
-
-        let drifted = expected.as_ref().is_some_and(|sha| *sha != head);
         let mut notes = Vec::new();
-        if drifted {
-            notes.push(format!("drifted from {}", short(&repo.git_ref)));
+        if off_pin {
+            notes.push(format!("drifted from {}", git::short(&repo.git_ref)));
         }
         if dirty {
             notes.push("locally modified".to_string());
@@ -55,7 +46,7 @@ pub(crate) fn status() -> Result<()> {
         if repo.kind == Kind::Branch {
             notes.push(format!("tracks {} (unpinned)", repo.git_ref));
         }
-        if drifted || dirty {
+        if off_pin || dirty {
             issues += 1;
         }
 
@@ -64,8 +55,8 @@ pub(crate) fn status() -> Result<()> {
         println!(
             "{:<20} {:<14} {} {}",
             repo.name,
-            if drifted || dirty { "attention" } else { "ok" },
-            short(&head),
+            if off_pin || dirty { "attention" } else { "ok" },
+            git::short(&head),
             notes.join(", ")
         );
     }

@@ -5,15 +5,13 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::manifest::Manifest;
-use crate::{git, paths, ui};
-
-use super::{auto_sync, find_index};
+use crate::{git, paths, sync, ui};
 
 pub(crate) fn remove(name: String, keep_files: bool, yes: bool) -> Result<()> {
     let root = git::root()?;
     let _lock = Manifest::lock(&root)?;
     let mut manifest = Manifest::load(&root)?;
-    let index = find_index(&manifest, &name)?;
+    let index = manifest.position(&name)?;
 
     let path = manifest.repos[index].path.clone();
     let dir = root.join(&path);
@@ -33,7 +31,7 @@ pub(crate) fn remove(name: String, keep_files: bool, yes: bool) -> Result<()> {
 
     manifest.repos.remove(index);
     manifest.save(&root)?;
-    auto_sync(&root, &manifest);
+    sync::refresh(&root, &manifest);
 
     if let Some(resolved) = resolved {
         fs::remove_dir_all(&resolved)

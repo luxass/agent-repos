@@ -151,6 +151,17 @@ impl Manifest {
         crate::fsx::write_atomic(&Self::path(root), &self.render())
     }
 
+    /// Locates an entry by name. Commands hold on to the index rather than the
+    /// entry itself, so they can still mutate the manifest afterwards.
+    pub(crate) fn position(&self, name: &str) -> Result<usize> {
+        self.repos
+            .iter()
+            .position(|repo| repo.name == name)
+            .ok_or_else(|| {
+                Error::failure(format!("no entry named `{name}` (see `agent-repos list`)"))
+            })
+    }
+
     pub(crate) fn parse(text: &str) -> Result<Self> {
         let mut header: Vec<String> = Vec::new();
         let mut pending: Vec<String> = Vec::new();

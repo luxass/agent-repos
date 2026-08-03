@@ -7,10 +7,12 @@
 //! Queries capture output; anything long-running (clone, fetch) inherits
 //! stderr so the user sees git's own progress.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::error::{Error, Result};
+use crate::manifest::{Kind, Repo};
 
 /// Progressively deeper fetches, for servers that refuse to serve an arbitrary
 /// commit directly. The last resort is the full history.
@@ -159,8 +161,25 @@ pub(crate) fn remote_sha(url: &str, reference: &str) -> Result<String> {
     fallback.ok_or_else(|| Error::failure(format!("{url} has no ref matching `{reference}`")))
 }
 
+/// Clones an entry at its pinned ref.
+///
+/// The only way in: a failed clone is cleaned up here, so a partial directory
+/// never blocks a retry, and no caller can skip that by reaching for one of the
+/// clone routines below directly.
+pub(crate) fn clone_pinned(repo: &Repo, dest: &Path) -> Result<()> {
+    let result = match repo.kind {
+        Kind::Tag | Kind::Branch => clone_ref(&repo.url, &repo.git_ref, dest),
+        Kind::Commit => clone_commit(&repo.url, &repo.git_ref, repo.track.as_deref(), dest),
+    };
+
+    if result.is_err() && dest.exists() {
+        let _ = fs::remove_dir_all(dest);
+    }
+    result
+}
+
 /// Shallow-clones a tag or branch.
-pub(crate) fn clone_ref(url: &str, reference: &str, dest: &Path) -> Result<()> {
+fn clone_ref(url: &str, reference: &str, dest: &Path) -> Result<()> {
     let dest = dest.to_string_lossy().into_owned();
     run(
         None,
@@ -182,7 +201,7 @@ pub(crate) fn clone_ref(url: &str, reference: &str, dest: &Path) -> Result<()> {
 /// Tries a direct shallow fetch of the sha first, which GitHub and GitLab both
 /// allow. Servers that refuse it fall back to fetching the tracked branch and
 /// deepening until the commit is reachable.
-pub(crate) fn clone_commit(url: &str, sha: &str, track: Option<&str>, dest: &Path) -> Result<()> {
+fn clone_commit(url: &str, sha: &str, track: Option<&str>, dest: &Path) -> Result<()> {
     let dest_string = dest.to_string_lossy().into_owned();
 
     run(None, &["init", "--quiet", &dest_string])?;
@@ -247,6 +266,30 @@ pub(crate) fn local_sha(dir: &Path, reference: &str) -> Option<String> {
         .filter(|sha| !sha.is_empty())
 }
 
+/// Abbreviates a full sha the way git itself displays one, leaving tags and
+/// branch names alone.
+pub(crate) fn short(git_ref: &str) -> String {
+    if git_ref.len() == 40 && git_ref.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        git_ref[..7].to_string()
+    } else {
+        git_ref.to_string()
+    }
+}
+
+/// Whether a checkout has moved off its pin.
+///
+/// A branch entry follows a moving target by definition, so it never counts as
+/// drifted. A tag counts only once the tag object is present locally; without
+/// it there is nothing to compare `head` against.
+pub(crate) fn drifted(dir: &Path, repo: &Repo, head: &str) -> bool {
+    let expected = match repo.kind {
+        Kind::Commit => Some(repo.git_ref.clone()),
+        Kind::Tag => local_sha(dir, &format!("refs/tags/{}", repo.git_ref)),
+        Kind::Branch => None,
+    };
+    expected.is_some_and(|sha| sha != head)
+}
+
 /// Whether a clone has uncommitted modifications. Reference clones are
 /// read-only by contract, so this is worth surfacing.
 pub(crate) fn is_dirty(dir: &Path) -> Result<bool> {
@@ -301,6 +344,18 @@ pub(crate) fn fetch_and_reset(dir: &Path, branch: &str) -> Result<()> {
     detach(dir, "FETCH_HEAD")
 }
 
+/// Moves an existing clone onto a pin, the counterpart of [`clone_pinned`].
+///
+/// Takes the kind and ref loose rather than a [`Repo`], because `update --to`
+/// applies a pin the entry does not carry yet.
+pub(crate) fn move_to(dir: &Path, kind: Kind, git_ref: &str) -> Result<()> {
+    match kind {
+        Kind::Tag => fetch_tag(dir, git_ref),
+        Kind::Branch => fetch_and_reset(dir, git_ref),
+        Kind::Commit => fetch_commit(dir, git_ref),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +364,14 @@ mod tests {
     fn root_is_found_from_inside_this_repository() {
         let found = root().expect("tests run inside a git repository");
         assert!(found.join(".git").exists());
+    }
+
+    #[test]
+    fn shortens_only_full_shas() {
+        assert_eq!(short("9f3a1c2e5b7d4a6c8e0f2b4d6a8c0e2f4b6d8a0c"), "9f3a1c2");
+        assert_eq!(short("v3.12.0"), "v3.12.0");
+        assert_eq!(short("main"), "main");
+        // 40 characters but not hex: leave it alone.
+        assert_eq!(short(&"z".repeat(40)), "z".repeat(40));
     }
 }

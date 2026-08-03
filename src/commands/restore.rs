@@ -7,8 +7,6 @@ use crate::error::{Error, Result};
 use crate::manifest::Manifest;
 use crate::{git, ui};
 
-use super::{checkout, short};
-
 pub(crate) fn restore() -> Result<()> {
     let root = git::root()?;
     let manifest = Manifest::load(&root)?;
@@ -31,16 +29,10 @@ pub(crate) fn restore() -> Result<()> {
             "restoring {} at {} {}",
             repo.name,
             repo.kind.as_str(),
-            short(&repo.git_ref)
+            git::short(&repo.git_ref)
         ));
 
-        match checkout(
-            &repo.url,
-            &repo.kind,
-            &repo.git_ref,
-            repo.track.as_deref(),
-            &dest,
-        ) {
+        match git::clone_pinned(repo, &dest) {
             Ok(()) => restored += 1,
             Err(err) => {
                 // One bad entry should not stop the rest from being restored.

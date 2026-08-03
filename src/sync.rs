@@ -267,6 +267,21 @@ pub(crate) fn apply(
     Ok(drifted)
 }
 
+/// Refreshes the generated blocks after a command changes the manifest.
+///
+/// A problem in a target file — an unknown block, say — must not undo work that
+/// already succeeded, so this reports and carries on rather than failing the
+/// command. The manifest is already saved; `agent-repos sync` will pick it up
+/// once the file is fixed.
+pub(crate) fn refresh(root: &Path, manifest: &Manifest) {
+    if manifest.targets.is_empty() {
+        return;
+    }
+    if let Err(err) = apply(root, manifest, &manifest.targets, SyncMode::Quiet) {
+        ui::error(&format!("could not refresh instruction files: {err}"));
+    }
+}
+
 pub(crate) fn sync(targets: Vec<String>, mode: SyncMode) -> Result<()> {
     let root = crate::git::root()?;
     let _lock = Manifest::lock(&root)?;

@@ -9,9 +9,7 @@ use std::path::Path;
 use crate::error::{Error, Result};
 use crate::manifest::{Kind, Manifest};
 use crate::version::newest_tag;
-use crate::{git, ui};
-
-use super::{auto_sync, checkout, find_index, short};
+use crate::{git, sync, ui};
 
 /// A parsed `update` invocation. `all`, `latest` and `yes` are all booleans,
 /// so they travel together in a named struct rather than by position.
@@ -42,7 +40,7 @@ pub(crate) fn update(request: UpdateRequest) -> Result<()> {
     } else {
         names
             .iter()
-            .map(|name| find_index(&manifest, name))
+            .map(|name| manifest.position(name))
             .collect::<Result<_>>()?
     };
 
@@ -65,7 +63,7 @@ pub(crate) fn update(request: UpdateRequest) -> Result<()> {
 
     if changed {
         manifest.save(&root)?;
-        auto_sync(&root, &manifest);
+        sync::refresh(&root, &manifest);
     }
     Ok(())
 }
@@ -85,13 +83,7 @@ fn update_one(
     // Nothing to update against: put the pinned checkout back first.
     if !dir.exists() {
         ui::log(&format!("{}: missing, restoring", repo.name));
-        checkout(
-            &repo.url,
-            &repo.kind,
-            &repo.git_ref,
-            repo.track.as_deref(),
-            &dir,
-        )?;
+        git::clone_pinned(&repo, &dir)?;
         if to.is_none() && !latest {
             return Ok(false);
         }
@@ -99,16 +91,16 @@ fn update_one(
 
     if let Some(target) = to {
         let (kind, git_ref, track) = classify(&repo.url, target)?;
-        move_to(&dir, &kind, &git_ref)?;
+        git::move_to(&dir, kind, &git_ref)?;
 
         let entry = &mut manifest.repos[index];
         ui::log(&format!(
             "{}: {} {} -> {} {}",
             entry.name,
             entry.kind.as_str(),
-            short(&entry.git_ref),
+            git::short(&entry.git_ref),
             kind.as_str(),
-            short(&git_ref)
+            git::short(&git_ref)
         ));
         entry.kind = kind;
         entry.git_ref = git_ref;
@@ -127,7 +119,7 @@ fn update_one(
                 "{}: reset to {} at {}",
                 repo.name,
                 repo.git_ref,
-                short(&git::head_sha(&dir)?)
+                git::short(&git::head_sha(&dir)?)
             ));
             Ok(false)
         }
@@ -170,7 +162,7 @@ fn update_one(
                 ui::log(&format!(
                     "{}: already at {} (head of {track})",
                     repo.name,
-                    short(&newest)
+                    git::short(&newest)
                 ));
                 return Ok(false);
             }
@@ -178,12 +170,16 @@ fn update_one(
                 &format!(
                     "Move {} from {} to {} (head of {track})?",
                     repo.name,
-                    short(&repo.git_ref),
-                    short(&newest)
+                    git::short(&repo.git_ref),
+                    git::short(&newest)
                 ),
                 yes,
             )? {
-                ui::log(&format!("{}: left at {}", repo.name, short(&repo.git_ref)));
+                ui::log(&format!(
+                    "{}: left at {}",
+                    repo.name,
+                    git::short(&repo.git_ref)
+                ));
                 return Ok(false);
             }
 
@@ -191,8 +187,8 @@ fn update_one(
             ui::log(&format!(
                 "{}: {} -> {}",
                 repo.name,
-                short(&repo.git_ref),
-                short(&newest)
+                git::short(&repo.git_ref),
+                git::short(&newest)
             ));
             manifest.repos[index].git_ref = newest;
             Ok(true)
@@ -200,26 +196,20 @@ fn update_one(
 
         // Pinned, and no instruction to move: verify rather than change.
         Kind::Tag | Kind::Commit => {
-            let head = git::head_sha(&dir)?;
-            let expected = match repo.kind {
-                Kind::Commit => Some(repo.git_ref.clone()),
-                _ => git::local_sha(&dir, &format!("refs/tags/{}", repo.git_ref)),
-            };
-
-            if expected.is_some_and(|sha| sha != head) {
+            if git::drifted(&dir, &repo, &git::head_sha(&dir)?) {
                 ui::log(&format!(
                     "{}: drifted, restoring {} {}",
                     repo.name,
                     repo.kind.as_str(),
-                    short(&repo.git_ref)
+                    git::short(&repo.git_ref)
                 ));
-                move_to(&dir, &repo.kind, &repo.git_ref)?;
+                git::move_to(&dir, repo.kind, &repo.git_ref)?;
             } else {
                 ui::log(&format!(
                     "{}: pinned to {} {} (use --latest to move it)",
                     repo.name,
                     repo.kind.as_str(),
-                    short(&repo.git_ref)
+                    git::short(&repo.git_ref)
                 ));
             }
             Ok(false)
@@ -245,12 +235,4 @@ fn classify(url: &str, reference: &str) -> Result<(Kind, String, Option<String>)
     Err(Error::failure(format!(
         "{url} has no tag or branch called `{reference}`, and it is not a commit sha"
     )))
-}
-
-fn move_to(dir: &Path, kind: &Kind, git_ref: &str) -> Result<()> {
-    match kind {
-        Kind::Tag => git::fetch_tag(dir, git_ref),
-        Kind::Branch => git::fetch_and_reset(dir, git_ref),
-        Kind::Commit => git::fetch_commit(dir, git_ref),
-    }
 }
