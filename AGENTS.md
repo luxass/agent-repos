@@ -45,7 +45,7 @@ growth.
 | Concern | Location |
 | --- | --- |
 | Module wiring and exit path | `src/main.rs`; keep it tiny |
-| CLI dispatch, help, and command flags | `src/cli/mod.rs`, then update `src/completions.rs` |
+| CLI dispatch, help, and command flags | `src/cli/mod.rs`, then update `src/cli/completions.rs` |
 | Hand-written argument parsing | `src/cli/args.rs` |
 | Command behavior | `src/commands/<command>.rs`; one file per command |
 | Helpers shared by multiple commands | `src/commands/mod.rs`; do not use it as a drawer |
