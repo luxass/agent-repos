@@ -6,8 +6,9 @@
 //! basic strings with `\"`, `\\`, `\n` and `\t` escapes.
 //!
 //! Not supported, by design: inline tables, multi-line strings, dotted keys,
-//! and values spanning lines. Unknown keys are a hard error rather than being
-//! silently dropped, so a typo never costs you a pin.
+//! and values spanning lines. Unknown and repeated keys are hard errors rather
+//! than being silently dropped or resolved last-wins, so a typo never costs
+//! you a pin.
 //!
 //! Comments in the header, and comments immediately preceding a `[[repo]]`,
 //! are preserved across a rewrite. A trailing comment on a `key = value` line
@@ -287,16 +288,15 @@ impl Manifest {
             out.push('\n');
         }
 
+        let targets: Vec<String> = self
+            .targets
+            .iter()
+            .map(|target| format!("\"{}\"", escape(target)))
+            .collect();
+
         out.push_str(&format!("version = {FORMAT_VERSION}\n"));
         out.push_str(&format!("dir = \"{}\"\n", escape(&self.dir)));
-        out.push_str("targets = [");
-        for (index, target) in self.targets.iter().enumerate() {
-            if index > 0 {
-                out.push_str(", ");
-            }
-            out.push_str(&format!("\"{}\"", escape(target)));
-        }
-        out.push_str("]\n");
+        out.push_str(&format!("targets = [{}]\n", targets.join(", ")));
 
         for repo in &self.repos {
             out.push('\n');
@@ -333,6 +333,10 @@ impl Manifest {
     }
 }
 
+fn duplicate(key: &str, line: usize) -> Error {
+    Error::failure(format!("line {line}: duplicate key {key:?}"))
+}
+
 /// A `[[repo]]` block being filled in, so that a missing key can be reported
 /// against the block's own line rather than the end of the file.
 #[derive(Debug)]
@@ -365,50 +369,39 @@ impl PartialRepo {
         }
     }
 
+    /// Records one `key = value` line. A repeated key is an error rather than
+    /// last-wins, for the same reason an unknown key is: a typo must never
+    /// quietly decide the pin.
     fn set(&mut self, key: &str, value: Value, line: usize) -> Result<()> {
-        let duplicate = |key: &str| Error::failure(format!("line {line}: duplicate key {key:?}"));
+        // `kind` is the one key that is not stored as a string, so it is
+        // parsed here and the rest share a slot.
+        if key == "kind" {
+            let kind = Kind::parse(&value.string(key, line)?, line)?;
+            return match self.kind.replace(kind) {
+                None => Ok(()),
+                Some(_) => Err(duplicate(key, line)),
+            };
+        }
 
-        match key {
-            "name" => {
-                if self.name.is_some() {
-                    return Err(duplicate(key));
-                }
-                self.name = Some(value.string(key, line)?);
-            }
-            "url" => {
-                if self.url.is_some() {
-                    return Err(duplicate(key));
-                }
-                self.url = Some(value.string(key, line)?);
-            }
-            "ref" => {
-                if self.git_ref.is_some() {
-                    return Err(duplicate(key));
-                }
-                self.git_ref = Some(value.string(key, line)?);
-            }
-            "kind" => {
-                if self.kind.is_some() {
-                    return Err(duplicate(key));
-                }
-                self.kind = Some(Kind::parse(&value.string(key, line)?, line)?);
-            }
-            "path" => {
-                if self.path.is_some() {
-                    return Err(duplicate(key));
-                }
-                self.path = Some(value.string(key, line)?);
-            }
-            "track" => self.track = Some(value.string(key, line)?),
-            "desc" => self.desc = Some(value.string(key, line)?),
-            "use" => self.usage = Some(value.string(key, line)?),
+        let slot = match key {
+            "name" => &mut self.name,
+            "url" => &mut self.url,
+            "ref" => &mut self.git_ref,
+            "path" => &mut self.path,
+            "track" => &mut self.track,
+            "desc" => &mut self.desc,
+            "use" => &mut self.usage,
             other => {
                 return Err(Error::failure(format!(
                     "line {line}: unknown key {other:?} in [[repo]]"
                 )));
             }
+        };
+
+        match slot.replace(value.string(key, line)?) {
+            None => Ok(()),
+            Some(_) => Err(duplicate(key, line)),
         }
-        Ok(())
     }
 
     fn build(self) -> Result<Repo> {
@@ -691,6 +684,19 @@ track = "main"
 
         let err = Manifest::parse("version = 1\n[[repo]]\nnope = \"x\"\n").unwrap_err();
         assert!(err.to_string().contains("unknown key \"nope\""), "{err}");
+    }
+
+    #[test]
+    fn repeated_keys_are_rejected() {
+        // Last-wins would let a stray second line silently decide the pin.
+        for key in ["name", "url", "ref", "kind", "path", "track", "desc", "use"] {
+            let text = format!("version = 1\n[[repo]]\n{key} = \"tag\"\n{key} = \"tag\"\n");
+            let err = Manifest::parse(&text).unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("duplicate key {key:?}")),
+                "{key}: {err}"
+            );
+        }
     }
 
     #[test]
