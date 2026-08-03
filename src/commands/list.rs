@@ -1,7 +1,7 @@
 //! `agent-repos list` — the configured entries, as a table or as JSON.
 
 use crate::error::Result;
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, Repo};
 use crate::{git, json, ui};
 
 pub(crate) fn list(json: bool) -> Result<()> {
@@ -19,7 +19,8 @@ pub(crate) fn list(json: bool) -> Result<()> {
         return Ok(());
     }
 
-    let width = |pick: fn(&crate::manifest::Repo) -> &str, heading: &str| {
+    // Columns are as wide as their widest cell, heading included.
+    let width = |pick: fn(&Repo) -> &str, heading: &str| {
         manifest
             .repos
             .iter()

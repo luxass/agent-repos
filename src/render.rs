@@ -9,37 +9,81 @@ use crate::manifest::{Manifest, Repo};
 /// Fields shown by the `repos` block when it does not say otherwise.
 pub(crate) const DEFAULT_FIELDS: &[&str] = &["name", "ref", "path", "desc"];
 
-fn heading(field: &str) -> Result<&'static str> {
-    Ok(match field {
-        "name" => "Repo",
-        "ref" => "Version",
-        "kind" => "Kind",
-        "path" => "Path",
-        "url" => "URL",
-        "desc" => "Purpose",
-        "use" => "Consult for",
-        other => {
-            return Err(Error::failure(format!(
-                "unknown field `{other}` (expected name, ref, kind, path, url, desc or use)"
-            )));
-        }
-    })
+/// Said in the empty case rather than rendering a table with no rows.
+const NOTHING_CONFIGURED: &str = "_No reference repositories configured._";
+
+/// One column a `repos` block can show. Keeping the manifest key, the heading
+/// and the accessor together is what stops the accepted set, the headings and
+/// the "expected ..." message from drifting apart.
+struct Field {
+    key: &'static str,
+    heading: &'static str,
+    read: fn(&Repo) -> &str,
 }
 
-fn cell(repo: &Repo, field: &str) -> String {
-    let value = match field {
-        "name" => repo.name.clone(),
-        "ref" => repo.git_ref.clone(),
-        "kind" => repo.kind.as_str().to_string(),
-        "path" => repo.path.clone(),
-        "url" => repo.url.clone(),
-        "desc" => repo.desc.clone().unwrap_or_default(),
-        "use" => repo.usage.clone().unwrap_or_default(),
-        _ => String::new(),
-    };
+const FIELDS: &[Field] = &[
+    Field {
+        key: "name",
+        heading: "Repo",
+        read: |repo| &repo.name,
+    },
+    Field {
+        key: "ref",
+        heading: "Version",
+        read: |repo| &repo.git_ref,
+    },
+    Field {
+        key: "kind",
+        heading: "Kind",
+        read: |repo| repo.kind.as_str(),
+    },
+    Field {
+        key: "path",
+        heading: "Path",
+        read: |repo| &repo.path,
+    },
+    Field {
+        key: "url",
+        heading: "URL",
+        read: |repo| &repo.url,
+    },
+    Field {
+        key: "desc",
+        heading: "Purpose",
+        read: |repo| repo.desc.as_deref().unwrap_or_default(),
+    },
+    Field {
+        key: "use",
+        heading: "Consult for",
+        read: |repo| repo.usage.as_deref().unwrap_or_default(),
+    },
+];
 
-    // A pipe in a value would otherwise split the markdown cell.
-    value.replace('|', "\\|")
+/// Resolves the field names on a marker, rejecting the whole block if any is
+/// unknown. Callers do this before the empty check, so a misspelled field is
+/// caught even with nothing configured yet rather than lying in wait until the
+/// first `add`.
+fn resolve(names: &[String]) -> Result<Vec<&'static Field>> {
+    names
+        .iter()
+        .map(|name| {
+            FIELDS
+                .iter()
+                .find(|field| field.key == name)
+                .ok_or_else(|| {
+                    let known: Vec<&str> = FIELDS.iter().map(|field| field.key).collect();
+                    Error::failure(format!(
+                        "unknown field `{name}` (expected {})",
+                        known.join(", ")
+                    ))
+                })
+        })
+        .collect()
+}
+
+/// A field's value, with pipes escaped so they cannot split a markdown cell.
+fn cell(repo: &Repo, field: &Field) -> String {
+    (field.read)(repo).replace('|', "\\|")
 }
 
 /// Prose telling an agent how to treat the clone directory.
@@ -64,75 +108,66 @@ pub(crate) fn guidance(dir: &str) -> String {
 }
 
 pub(crate) fn repos_table(manifest: &Manifest, fields: &[String]) -> Result<String> {
-    // Validate before the empty check, so a misspelled field is caught even
-    // with nothing configured yet rather than lying in wait until the first
-    // `add`.
-    let headings: Vec<&str> = fields
-        .iter()
-        .map(|field| heading(field))
-        .collect::<Result<_>>()?;
-
+    let fields = resolve(fields)?;
     if manifest.repos.is_empty() {
-        return Ok("_No reference repositories configured._".to_string());
+        return Ok(NOTHING_CONFIGURED.to_string());
     }
 
-    let mut out = format!("| {} |\n", headings.join(" | "));
-    out.push_str(&format!("|{}\n", "---|".repeat(fields.len())));
+    let headings: Vec<&str> = fields.iter().map(|field| field.heading).collect();
+    let mut rows = vec![
+        format!("| {} |", headings.join(" | ")),
+        format!("|{}", "---|".repeat(fields.len())),
+    ];
 
     for repo in &manifest.repos {
         let cells: Vec<String> = fields.iter().map(|field| cell(repo, field)).collect();
-        out.push_str(&format!("| {} |\n", cells.join(" | ")));
+        rows.push(format!("| {} |", cells.join(" | ")));
     }
 
-    Ok(out.trim_end().to_string())
+    Ok(rows.join("\n"))
 }
 
 pub(crate) fn repos_list(manifest: &Manifest, fields: &[String]) -> Result<String> {
-    for field in fields {
-        heading(field)?;
-    }
-
+    let fields = resolve(fields)?;
     if manifest.repos.is_empty() {
-        return Ok("_No reference repositories configured._".to_string());
+        return Ok(NOTHING_CONFIGURED.to_string());
     }
 
-    let mut out = String::new();
-    for repo in &manifest.repos {
-        let rest: Vec<String> = fields
-            .iter()
-            .filter(|field| field.as_str() != "name")
-            .map(|field| {
-                let value = cell(repo, field);
-                if value.is_empty() {
-                    String::new()
-                } else {
-                    format!("{}: {value}", heading(field).unwrap_or(field))
-                }
-            })
-            .filter(|part| !part.is_empty())
-            .collect();
+    // The name leads the bullet, so it is never repeated among the details.
+    let rows: Vec<String> = manifest
+        .repos
+        .iter()
+        .map(|repo| {
+            let details: Vec<String> = fields
+                .iter()
+                .filter(|field| field.key != "name")
+                .map(|field| (field.heading, cell(repo, field)))
+                .filter(|(_, value)| !value.is_empty())
+                .map(|(heading, value)| format!("{heading}: {value}"))
+                .collect();
 
-        out.push_str(&format!("- **{}** — {}\n", repo.name, rest.join(", ")));
-    }
+            format!("- **{}** — {}", repo.name, details.join(", "))
+        })
+        .collect();
 
-    Ok(out.trim_end().to_string())
+    Ok(rows.join("\n"))
 }
 
 pub(crate) fn repo_detail(repo: &Repo) -> String {
-    let mut out = format!(
+    let mut paragraphs = vec![format!(
         "**{}** — pinned to `{}` ({}) at `{}`.",
         repo.name,
         repo.git_ref,
         repo.kind.as_str(),
         repo.path
-    );
+    )];
     if let Some(desc) = &repo.desc {
-        out.push_str(&format!("\n\n{desc}"));
+        paragraphs.push(desc.clone());
     }
     if let Some(usage) = &repo.usage {
-        out.push_str(&format!("\n\nConsult for: {usage}"));
+        paragraphs.push(format!("Consult for: {usage}"));
     }
-    out
+    paragraphs.join("\n\n")
 }
 
 pub(crate) fn paths(manifest: &Manifest) -> String {

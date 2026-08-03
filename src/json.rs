@@ -9,67 +9,50 @@ use std::path::Path;
 use crate::manifest::Manifest;
 
 pub(crate) fn render(manifest: &Manifest, root: &Path) -> String {
-    let mut out = String::from("{\n");
-    out.push_str(&format!("  \"dir\": \"{}\",\n", json_escape(&manifest.dir)));
+    let targets: Vec<String> = manifest.targets.iter().map(|t| quote(t)).collect();
 
-    out.push_str("  \"targets\": [");
-    for (index, target) in manifest.targets.iter().enumerate() {
-        if index > 0 {
-            out.push_str(", ");
-        }
-        out.push_str(&format!("\"{}\"", json_escape(target)));
-    }
-    out.push_str("],\n");
+    let entries: Vec<String> = manifest
+        .repos
+        .iter()
+        .map(|repo| {
+            let fields = [
+                ("name", quote(&repo.name)),
+                ("url", quote(&repo.url)),
+                ("ref", quote(&repo.git_ref)),
+                ("kind", quote(repo.kind.as_str())),
+                ("path", quote(&repo.path)),
+                ("track", nullable(repo.track.as_deref())),
+                ("desc", nullable(repo.desc.as_deref())),
+                ("use", nullable(repo.usage.as_deref())),
+                ("present", root.join(&repo.path).exists().to_string()),
+            ];
+            let lines: Vec<String> = fields
+                .iter()
+                .map(|(key, value)| format!("      \"{key}\": {value}"))
+                .collect();
+            format!("    {{\n{}\n    }}", lines.join(",\n"))
+        })
+        .collect();
 
-    out.push_str("  \"repos\": [");
-    for (index, repo) in manifest.repos.iter().enumerate() {
-        out.push_str(if index > 0 { ",\n    {\n" } else { "\n    {\n" });
-        out.push_str(&format!(
-            "      \"name\": \"{}\",\n",
-            json_escape(&repo.name)
-        ));
-        out.push_str(&format!("      \"url\": \"{}\",\n", json_escape(&repo.url)));
-        out.push_str(&format!(
-            "      \"ref\": \"{}\",\n",
-            json_escape(&repo.git_ref)
-        ));
-        out.push_str(&format!("      \"kind\": \"{}\",\n", repo.kind.as_str()));
-        out.push_str(&format!(
-            "      \"path\": \"{}\",\n",
-            json_escape(&repo.path)
-        ));
-        out.push_str(&format!(
-            "      \"track\": {},\n",
-            json_option(repo.track.as_deref())
-        ));
-        out.push_str(&format!(
-            "      \"desc\": {},\n",
-            json_option(repo.desc.as_deref())
-        ));
-        out.push_str(&format!(
-            "      \"use\": {},\n",
-            json_option(repo.usage.as_deref())
-        ));
-        out.push_str(&format!(
-            "      \"present\": {}\n",
-            root.join(&repo.path).exists()
-        ));
-        out.push_str("    }");
-    }
-    out.push_str(if manifest.repos.is_empty() {
-        "]\n"
+    let repos = if entries.is_empty() {
+        String::new()
     } else {
-        "\n  ]\n"
-    });
-    out.push_str("}\n");
-    out
+        format!("\n{}\n  ", entries.join(",\n"))
+    };
+
+    format!(
+        "{{\n  \"dir\": {},\n  \"targets\": [{}],\n  \"repos\": [{repos}]\n}}\n",
+        quote(&manifest.dir),
+        targets.join(", ")
+    )
 }
 
-fn json_option(value: Option<&str>) -> String {
-    match value {
-        Some(value) => format!("\"{}\"", json_escape(value)),
-        None => "null".to_string(),
-    }
+fn quote(value: &str) -> String {
+    format!("\"{}\"", json_escape(value))
+}
+
+fn nullable(value: Option<&str>) -> String {
+    value.map_or_else(|| "null".to_string(), quote)
 }
 
 fn json_escape(value: &str) -> String {
