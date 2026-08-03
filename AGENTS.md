@@ -1,52 +1,127 @@
 # AGENT-REPOS
 
-A CLI that maintains pinned clones of external repositories under
-`.agent-repos/repos/`, so coding agents read a dependency's real source instead
-of guessing at its API.
+`agent-repos` maintains pinned clones of external repositories under
+`.agent-repos/repos/`, so coding agents can read the exact source a project
+depends on instead of guessing at its API.
 
-Written in Rust with **zero dependencies**. The whole point of the project is a
-tiny, statically-linked binary that works everywhere.
+It is a Rust CLI with zero dependencies. The product is the small, portable,
+statically linked binary—not merely the behavior of the commands.
 
-## HARD INVARIANTS
+## A note from Lucas
 
-Do not break these without the maintainer explicitly agreeing. Each one is
-enforced somewhere, and each exists for a stated reason.
+Hi. I built this because I want agents to inspect real code before confidently
+inventing an answer, and I do not think enabling that should require a large
+tool or another ecosystem.
 
-| Invariant | Enforced by | Why |
-| --- | --- | --- |
-| No dependencies. `std` only. | Empty `[dependencies]`, CI size guard | `clap` alone costs more than the rest of the binary |
-| Binary stays under 640 KB | Size guard in `.github/workflows/ci.yml` | The reason the project exists — see SIZE below |
-| No `unsafe` | `unsafe_code = "forbid"` in `Cargo.toml` | Nothing here needs it |
-| Shell out to `git`, never link a git library | Code review | `gix` would add 5-8 MB and mean reimplementing credential handling. Spawning `git` inherits SSH keys, credential helpers, proxies, `GH_TOKEN` and git-lfs for free |
-| No C dependencies and no `build.rs` | Code review | This is what lets musl targets cross-compile from any host with no zig, Docker or musl-gcc |
-| Every version pinned exactly | `rust-toolchain.toml`, `Cargo.lock`, SHA-pinned actions | See PINNING below |
-| A ref is never inferred from `package.json` or a lockfile | Code review | The user pins deliberately, or the default branch's current head commit is pinned |
+I want `agent-repos` to feel almost boring: one tiny binary, a visible desired
+state, ordinary Git, and failure modes that leave the project understandable.
+Prefer the obvious design over the clever one. “Obvious” does not always mean
+less code; a little coordination is worth it when it prevents lost data. But
+every abstraction and file should earn its place.
 
-If a change pushes the binary over the limit, do not raise the limit. Work out
-what pulled the weight in and remove it.
+Please push back when a request would weaken those qualities. Preserve the
+reason the tool exists, not an implementation merely because it already exists.
 
-## SIZE
+— Lucas
 
-Measured with the release profile, `x86_64-unknown-linux-musl` being the
-largest target:
+## Non-negotiable constraints
 
-| | Bytes |
+Do not break these without explicit maintainer approval.
+
+| Constraint | Why |
 | --- | --- |
-| hello-world using only args, `Command` and `fs` | ~426,000 |
-| agent-repos, complete | ~563,000 |
-| Guard | 655,360 |
+| Use `std` only; keep `[dependencies]` empty | A dependency such as `clap` costs more than the rest of the binary |
+| Keep the release binary below 655,360 bytes | Smallness and portability are product requirements, enforced by CI |
+| No `unsafe`, C dependencies, or `build.rs` | Nothing here needs them; musl targets must cross-compile without extra tooling |
+| Shell out to `git`; never link a Git library | This preserves users’ SSH keys, credential helpers, proxies, tokens, and Git LFS behavior |
+| Pin every toolchain, action, and package version exactly | Builds must not change because something floated |
+| Never infer a ref from a package manifest or lockfile | The user pins deliberately, or the default branch’s current head commit is pinned |
 
-The floor is not our code. `std` links the backtrace machinery — `gimli`,
-`addr2line`, `miniz_oxide`, `libunwind`, `rustc_demangle` — whether or not the
-program ever panics, and `panic = "abort"` does not remove it. Everything
-agent-repos does adds roughly 137 KB on top.
+If a change crosses the size limit, do not raise the limit. Find and remove the
+growth.
 
-That floor is only escapable with `-Z build-std` plus `panic_immediate_abort`,
-which is nightly-only and would break the pinned stable toolchain. If that
-trade ever looks worthwhile it is a deliberate decision, not a quiet one.
+## Project shape
 
-So the guard exists to catch **our** growth, not to chase the floor. Roughly
-80 KB of headroom. If a change eats into it, find out what did:
+| Concern | Location |
+| --- | --- |
+| Module wiring and exit path | `src/main.rs`; keep it tiny |
+| CLI dispatch, help, and command flags | `src/cli/mod.rs`, then update `src/completions.rs` |
+| Hand-written argument parsing | `src/cli/args.rs` |
+| Command behavior | `src/commands/<command>.rs`; one file per command |
+| Helpers shared by multiple commands | `src/commands/mod.rs`; do not use it as a drawer |
+| Manifest format and writer locking | `src/manifest.rs`; bump `FORMAT_VERSION` for breaking formats |
+| Git subprocess behavior | `src/git.rs` |
+| Generated instruction blocks | Render in `src/render.rs`, dispatch in `src/sync.rs` |
+| Terminal diagnostics and prompts | `src/ui.rs` |
+| JSON output, versions, and paths | `src/json.rs`, `src/version.rs`, `src/paths.rs` |
+| Atomic filesystem writes | `src/fsx.rs` |
+| End-to-end CLI behavior | `tests/cli.rs`, using local Git fixtures only |
+
+The on-disk state is deliberately explicit:
+
+```text
+.agent-repos/
+|-- manifest.toml  # committed desired state
+|-- write.lock     # ignored stable lock file
+`-- repos/         # ignored reference checkouts
+```
+
+Manifest and generated-instruction writes must be atomic and serialized. For
+`add`, do slow clone work before taking the writer lock, then reload the
+manifest while holding the lock before appending. This is what allows parallel
+adds without losing entries.
+
+## Design rules
+
+- Use `pub(crate)`, not `pub`; this is a binary crate and `unreachable_pub` is
+  enforced.
+- Use `#[expect(lint, reason = "...")]`, not `#[allow(...)]`.
+- Keep `main.rs` as wiring. Argument handling belongs in `cli/`; work belongs
+  in `commands/`.
+- Add a helper only when something calls it. Put it in `commands/mod.rs` only
+  after a second command needs it.
+- More than two adjacent parameters of the same type need a request struct.
+  Mutually exclusive booleans usually need an enum.
+- Diagnostics go to stderr through `ui::log` or `ui::error`. Reserve stdout for
+  machine-readable output such as `list --json`.
+- Use color only on a TTY and never when `NO_COLOR` is set.
+- Refusal paths matter as much as happy paths. Check everything needed to
+  decline safely before mutating the manifest or deleting files.
+- Preserve user-authored manifest comments and all text outside generated
+  instruction blocks.
+
+Exit codes are part of the interface:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | Operational failure, including `sync --check` drift |
+| 2 | Usage error |
+
+## Verification
+
+During development, run the smallest relevant unit or integration test. Before
+considering a branch complete, run:
+
+```sh
+cargo fmt --all --check
+cargo test --all
+cargo clippy --all-targets -- -D warnings
+```
+
+Integration tests must use local repositories created with `git init`; they
+must never require the network. Cover refusal cases: unsafe deletion, unknown
+refs, duplicate entries, malformed blocks, and writes that must remain atomic.
+
+After changes involving dependencies, generics, release settings, or other
+likely code-size growth, check the largest target:
+
+```sh
+cargo build --release --target x86_64-unknown-linux-musl
+wc -c target/x86_64-unknown-linux-musl/release/agent-repos
+```
+
+If it grows unexpectedly, inspect symbols instead of guessing:
 
 ```sh
 cargo build --release --target x86_64-unknown-linux-musl \
@@ -55,153 +130,21 @@ nm --print-size --size-sort --radix=d \
   target/x86_64-unknown-linux-musl/release/agent-repos | tail -25
 ```
 
-## STRUCTURE
+Keep `rust-toolchain.toml` and `Cargo.toml`’s `rust-version` aligned. Keep
+`Cargo.lock` committed, dependency versions exact, GitHub Actions pinned to
+full commit SHAs, and runner labels exact rather than `-latest`.
 
-```text
-agent-repos/
-|-- src/
-|   |-- main.rs           # Module wiring and the exit-code path. Keep it tiny
-|   |-- cli/
-|   |   |-- mod.rs        # argv -> a typed call: help, dispatch, flag parsing
-|   |   `-- args.rs       # Hand-rolled argument parser
-|   |-- error.rs          # Error type and ExitCode
-|   |-- ui.rs             # stderr logging, colour, confirmation prompts
-|   |-- commands/        # One module per command, matching the CLI surface
-|   |   |-- mod.rs        #   re-exports plus the few genuinely shared helpers
-|   |   `-- add.rs, init.rs, list.rs, pin.rs, remove.rs,
-|   |                     restore.rs, status.rs, update.rs
-|   |-- manifest.rs       # .agent-repos/manifest.toml parse/write and locking
-|   |-- git.rs            # std::process::Command wrappers around git
-|   |-- sync.rs           # AGENTS.md block scanning and rewriting
-|   |-- render.rs         # Block body generation (markdown)
-|   |-- json.rs           # list --json output
-|   |-- version.rs        # Tag ordering for update --latest
-|   |-- completions.rs    # fish/bash/zsh completion scripts
-|   |-- paths.rs          # Relative-path validation, containment
-|   `-- fsx.rs            # Atomic writes
-|-- tests/cli.rs          # Integration tests over local git fixtures
-|-- .cargo/config.toml    # musl targets link via bundled rust-lld
-|-- rust-toolchain.toml   # Compiler pinned to 1.96.1
-|-- Cargo.lock            # Committed; this is a binary
-`-- .github/workflows/ci.yml
-```
+## Shipping
 
-## WHERE TO LOOK
-
-| Task | Location |
-| --- | --- |
-| Add a command or flag | `src/cli/mod.rs` — the command table, its parser, and `HELP` — then `src/completions.rs` |
-| Change argument parsing behaviour | `src/cli/args.rs` |
-| Change an exit code | `src/error.rs` |
-| Change terminal output, colour or prompts | `src/ui.rs` |
-| Change the manifest format | `src/manifest.rs` (bump `FORMAT_VERSION` if breaking) |
-| Change what a git operation does | `src/git.rs` |
-| Change command behaviour | `src/commands/<command>.rs` |
-| Change something two commands share | `src/commands/mod.rs` — and only if two really do share it |
-| Add or change a generated block | `src/render.rs`, then the dispatch in `src/sync.rs` |
-| Change `list --json` | `src/json.rs` |
-| Change how `--latest` picks a tag | `src/version.rs` |
-| Change the size limit or CI steps | `.github/workflows/ci.yml` |
-| Change how musl links | `.cargo/config.toml` |
-| Bump the compiler | `rust-toolchain.toml` **and** `rust-version` in `Cargo.toml` |
-
-## COMMANDS
+Work ships as stacked PRs through `gh stack`. One branch is one independently
+buildable, lintable, testable PR. Keep a stack to at most three branches.
 
 ```sh
-cargo build --release                 # ~421 KB on macOS arm64
-cargo test --all
-cargo clippy --all-targets -- -D warnings
-cargo fmt --all --check
-
-# Fully static Linux binaries, cross-compiled from any host.
-# No zig, no Docker, no musl-gcc.
-cargo build --release --target x86_64-unknown-linux-musl
-cargo build --release --target aarch64-unknown-linux-musl
+gh stack view --json
+gh stack add <branch>
+gh stack submit --auto       # draft PRs
+gh stack submit --auto --open
 ```
 
-Check the size after any change that touches dependencies or generics:
-
-```sh
-cargo build --release && ls -l target/release/agent-repos
-```
-
-## CONVENTIONS
-
-- `pub(crate)`, not `pub`. This is a binary crate, and `unreachable_pub` is on.
-- `#[expect(lint, reason = "...")]`, not `#[allow(...)]`. `expect` warns once
-  the suppression stops being needed, so it removes itself instead of rotting.
-- Diagnostics go to **stderr** via `ui::log` / `ui::error`. **stdout** is
-  reserved for machine-readable output such as `list --json`.
-- Colour only on a TTY, and never when `NO_COLOR` is set.
-- Do not add a helper before something calls it. An uncalled function fails
-  `-D warnings`, and suppressing that costs more than waiting.
-- `main.rs` stays wiring only. Argument handling belongs in `cli/mod.rs`, work
-  belongs in `src/commands/`. If you find yourself adding a `use` in the middle
-  of a file to make an edit fit, the edit is in the wrong file.
-- A new command is a new file in `src/commands/`, re-exported from its
-  `mod.rs`. Put a helper in `mod.rs` only once a second command needs it —
-  `mod.rs` is not a drawer.
-- More than two same-typed parameters in a row is a transposition waiting to
-  happen — `AddRequest` and `UpdateRequest` exist for exactly that reason. Two
-  booleans that cannot both be true want an enum, as `SyncMode` does.
-
-### Exit codes
-
-| Code | Meaning |
-| --- | --- |
-| 0 | Success |
-| 1 | The command could not be carried out: bad manifest, git failure, missing entry. Also `sync --check` when a file is out of date |
-| 2 | Usage error: unknown option, missing value, mutually exclusive flags |
-
-## PINNING
-
-Everything is pinned to an exact version. Nothing floats.
-
-- **Toolchain** — `rust-toolchain.toml` pins `1.96.1`. rustup honours it
-  automatically, so CI needs no third-party toolchain action.
-- **Cargo** — `Cargo.lock` is committed. Any dependency ever added goes in as
-  `=x.y.z`, never a caret range. Prefer adding nothing.
-- **Actions** — pinned to full commit SHAs with the tag in a trailing comment.
-  Note that some upstreams publish *annotated* tags, whose tag-object SHA does
-  not resolve in `uses:`. Dereference to the commit:
-  `gh api repos/OWNER/REPO/git/tags/<tag-sha> --jq .object.sha`
-- **Runner images** — exact labels (`ubuntu-24.04`), never `-latest`. A rolling
-  label can break the size guard with no code change.
-
-## WORKFLOW
-
-Work ships as stacked PRs via `gh stack`. One branch is one PR.
-
-```sh
-gh stack view                  # where am I
-gh stack add <branch>          # new branch on top
-gh stack submit --auto         # push and create/update PRs (drafts)
-gh stack submit --open         # mark ready for review
-```
-
-- Every branch must build, lint and test **on its own**. Each one is a PR
-  somebody reads in isolation.
-- Keep a stack to three branches. Merge it before starting the next — deep
-  stacks are painful to rebase when review changes land at the bottom.
-- `gh stack modify` and `gh stack rebase` rewrite history across branches. Only
-  with a clean worktree.
-- `gh stack unstack` deletes the stack **on GitHub as well as locally**. Not a
-  local cleanup tool.
-
-## TESTING
-
-Unit tests live beside the code they cover. Integration tests in `tests/cli.rs`
-drive the real binary against **local** git fixtures built with `git init` —
-never the network, so they work offline and in CI.
-
-When adding a command, cover the refusal paths too, not just the happy one.
-Most of the value in this tool is that it declines to do the wrong thing:
-deleting something that is not a checkout, moving a pin nobody asked to move,
-writing a file it could not fully render.
-
-## STATUS
-
-Every command is implemented. This repository does not use `agent-repos` on
-itself — it has no external dependencies to vendor — so there are no
-`<!-- agent-repos:... -->` blocks in this file. See the README for what the
-generated blocks look like.
+Only rebase or modify a stack with a clean worktree. `gh stack unstack` removes
+the stack on GitHub as well as locally; it is not a cleanup command.
