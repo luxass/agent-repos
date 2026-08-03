@@ -1,8 +1,8 @@
 //! `agent-repos pin` — freeze an entry to the commit currently checked out.
 
-use crate::error::{Error, Result};
 use crate::manifest::{Kind, Manifest};
-use crate::{git, sync, ui};
+use crate::ui::{Error, Result};
+use crate::{git, instructions, ui};
 
 pub(crate) fn pin(name: String) -> Result<()> {
     let root = git::root()?;
@@ -38,7 +38,7 @@ pub(crate) fn pin(name: String) -> Result<()> {
     repo.git_ref = head.clone();
 
     manifest.save(&root)?;
-    sync::refresh(&root, &manifest);
+    instructions::refresh(&root, &manifest);
 
     ui::log(&format!(
         "pinned {name} to {} (was {})",

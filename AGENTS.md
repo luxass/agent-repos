@@ -45,17 +45,19 @@ growth.
 | Concern | Location |
 | --- | --- |
 | Module wiring and exit path | `src/main.rs`; keep it tiny |
-| CLI dispatch, help, and command flags | `src/cli/mod.rs`, then update `src/cli/completions.rs` |
-| Hand-written argument parsing | `src/cli/args.rs` |
-| Command behavior | `src/commands/<command>.rs`; one file per command |
+| CLI dispatch, help, and argument parsing | `src/cli.rs`, then update `src/commands/completions.rs` |
+| Command behavior | `src/commands/<command>.rs`; one file per command, no exceptions |
 | Command registration | `src/commands/mod.rs`; declarations and re-exports only |
 | Manifest format, lookup, and writer locking | `src/manifest.rs`; bump `FORMAT_VERSION` for breaking formats |
 | Git subprocess behavior, and how a pin maps to it | `src/git.rs` |
-| Generated instruction blocks | Render in `src/render.rs`, dispatch in `src/sync.rs` |
-| Terminal diagnostics and prompts | `src/ui.rs` |
-| JSON output, versions, and paths | `src/json.rs`, `src/version.rs`, `src/paths.rs` |
-| Atomic filesystem writes | `src/fsx.rs` |
+| Generated instruction blocks | `src/instructions.rs`; the command around them is `src/commands/sync.rs` |
+| Errors, exit codes, diagnostics and prompts | `src/ui.rs` |
+| Path validation and atomic writes | `src/files.rs` |
 | End-to-end CLI behavior | `tests/cli.rs`, using local Git fixtures only |
+
+Every command in the CLI surface has a file in `src/commands/` and nowhere
+else. Anything two commands share moves to the module it operates on, not into
+a `commands/` sibling.
 
 The on-disk state is deliberately explicit:
 
@@ -76,7 +78,7 @@ adds without losing entries.
 - Use `pub(crate)`, not `pub`; this is a binary crate and `unreachable_pub` is
   enforced.
 - Use `#[expect(lint, reason = "...")]`, not `#[allow(...)]`.
-- Keep `main.rs` as wiring. Argument handling belongs in `cli/`; work belongs
+- Keep `main.rs` as wiring. Argument handling belongs in `cli.rs`; work belongs
   in `commands/`.
 - Add a helper only when something calls it. When a second command needs one,
   it goes with the thing it operates on — the manifest, git, or the instruction

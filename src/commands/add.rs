@@ -1,8 +1,8 @@
 //! `agent-repos add` — add a reference repository pinned to an exact ref.
 
-use crate::error::{Error, Result};
 use crate::manifest::{Kind, Manifest, Repo};
-use crate::{git, paths, sync, ui};
+use crate::ui::{Error, Result};
+use crate::{files, git, instructions, ui};
 
 /// Which ref an entry should be pinned to. Never inferred from a package
 /// manifest or lockfile: either the user says so, or the default branch's
@@ -121,7 +121,7 @@ pub(crate) fn add(request: AddRequest) -> Result<()> {
     manifest.save(&root)?;
 
     if !no_sync {
-        sync::refresh(&root, &manifest);
+        instructions::refresh(&root, &manifest);
     }
 
     ui::log(&summary);
@@ -129,8 +129,8 @@ pub(crate) fn add(request: AddRequest) -> Result<()> {
 }
 
 fn validate_addition(manifest: &Manifest, name: &str, path: &str) -> Result<()> {
-    paths::validate_relative("path", path)?;
-    if !paths::is_inside(&manifest.dir, path) {
+    files::validate_relative("path", path)?;
+    if !files::is_inside(&manifest.dir, path) {
         return Err(Error::failure(format!(
             "path {path} is outside the clone directory {}/",
             manifest.dir

@@ -11,8 +11,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::error::{Error, Result};
 use crate::manifest::{Kind, Repo};
+use crate::ui::{Error, Result};
 
 /// Progressively deeper fetches, for servers that refuse to serve an arbitrary
 /// commit directly. The last resort is the full history.
@@ -78,18 +78,13 @@ fn detach(dir: &Path, reference: &str) -> Result<()> {
 
 /// The root of the repository containing the working directory.
 pub(crate) fn root() -> Result<PathBuf> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|err| Error::failure(format!("could not run git: {err}")))?;
+    // This command fails for one interesting reason, so git's own stderr —
+    // several lines about discovery paths — is replaced with the advice that
+    // actually helps.
+    let output = capture(None, &["rev-parse", "--show-toplevel"])
+        .map_err(|_| Error::failure("not inside a Git repository (run `git init` first)"))?;
 
-    if !output.status.success() {
-        return Err(Error::failure(
-            "not inside a Git repository (run `git init` first)",
-        ));
-    }
-
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let path = output.trim();
     if path.is_empty() {
         return Err(Error::failure("git did not report a repository root"));
     }
@@ -161,14 +156,46 @@ pub(crate) fn remote_sha(url: &str, reference: &str) -> Result<String> {
     fallback.ok_or_else(|| Error::failure(format!("{url} has no ref matching `{reference}`")))
 }
 
+/// Every tag on a remote, de-duplicated. Peeled `^{}` entries are filtered out
+/// by `--refs`, so each tag appears once.
+pub(crate) fn remote_tags(url: &str) -> Result<Vec<String>> {
+    let output = capture(None, &["ls-remote", "--tags", "--refs", url])?;
+
+    let mut tags: Vec<String> = output
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .filter_map(|(_, name)| name.trim().strip_prefix("refs/tags/"))
+        .map(str::to_string)
+        .collect();
+
+    tags.sort();
+    tags.dedup();
+    Ok(tags)
+}
+
 /// Clones an entry at its pinned ref.
 ///
 /// The only way in: a failed clone is cleaned up here, so a partial directory
-/// never blocks a retry, and no caller can skip that by reaching for one of the
-/// clone routines below directly.
+/// never blocks a retry, and no caller can skip that by reaching for
+/// [`clone_commit`] directly.
 pub(crate) fn clone_pinned(repo: &Repo, dest: &Path) -> Result<()> {
+    let target = dest.to_string_lossy().into_owned();
+
     let result = match repo.kind {
-        Kind::Tag | Kind::Branch => clone_ref(&repo.url, &repo.git_ref, dest),
+        // A named ref clones shallowly in one shot.
+        Kind::Tag | Kind::Branch => run(
+            None,
+            &[
+                "clone",
+                "--depth",
+                "1",
+                "--single-branch",
+                "--branch",
+                &repo.git_ref,
+                &repo.url,
+                &target,
+            ],
+        ),
         Kind::Commit => clone_commit(&repo.url, &repo.git_ref, repo.track.as_deref(), dest),
     };
 
@@ -178,33 +205,15 @@ pub(crate) fn clone_pinned(repo: &Repo, dest: &Path) -> Result<()> {
     result
 }
 
-/// Shallow-clones a tag or branch.
-fn clone_ref(url: &str, reference: &str, dest: &Path) -> Result<()> {
-    let dest = dest.to_string_lossy().into_owned();
-    run(
-        None,
-        &[
-            "clone",
-            "--depth",
-            "1",
-            "--single-branch",
-            "--branch",
-            reference,
-            url,
-            &dest,
-        ],
-    )
-}
-
 /// Checks out an exact commit.
 ///
 /// Tries a direct shallow fetch of the sha first, which GitHub and GitLab both
 /// allow. Servers that refuse it fall back to fetching the tracked branch and
 /// deepening until the commit is reachable.
 fn clone_commit(url: &str, sha: &str, track: Option<&str>, dest: &Path) -> Result<()> {
-    let dest_string = dest.to_string_lossy().into_owned();
+    let target = dest.to_string_lossy().into_owned();
 
-    run(None, &["init", "--quiet", &dest_string])?;
+    run(None, &["init", "--quiet", &target])?;
     run(Some(dest), &["remote", "add", "origin", url])?;
 
     if try_run(Some(dest), &["fetch", "--depth", "1", "origin", sha])? {
@@ -234,21 +243,49 @@ fn clone_commit(url: &str, sha: &str, track: Option<&str>, dest: &Path) -> Resul
     detach(dest, sha)
 }
 
-/// Every tag on a remote, de-duplicated. Peeled `^{}` entries are filtered out
-/// by `--refs`, so each tag appears once.
-pub(crate) fn remote_tags(url: &str) -> Result<Vec<String>> {
-    let output = capture(None, &["ls-remote", "--tags", "--refs", url])?;
+/// Moves an existing clone onto a pin, the counterpart of [`clone_pinned`].
+///
+/// Takes the kind and ref loose rather than a [`Repo`], because `update --to`
+/// applies a pin the entry does not carry yet.
+pub(crate) fn move_to(dir: &Path, kind: Kind, git_ref: &str) -> Result<()> {
+    match kind {
+        Kind::Tag => {
+            run(
+                Some(dir),
+                &[
+                    "fetch",
+                    "--depth",
+                    "1",
+                    "--force",
+                    "origin",
+                    &format!("refs/tags/{git_ref}:refs/tags/{git_ref}"),
+                ],
+            )?;
+            detach(dir, &format!("refs/tags/{git_ref}"))
+        }
 
-    let mut tags: Vec<String> = output
-        .lines()
-        .filter_map(|line| line.split_once('\t'))
-        .filter_map(|(_, name)| name.trim().strip_prefix("refs/tags/"))
-        .map(str::to_string)
-        .collect();
+        // A hard reset rather than a pull: reference clones are read-only by
+        // contract, so there is nothing to preserve, and this cannot fail the
+        // way a non-fast-forward pull does.
+        Kind::Branch => {
+            run(
+                Some(dir),
+                &["fetch", "--depth", "1", "--force", "origin", git_ref],
+            )?;
+            detach(dir, "FETCH_HEAD")
+        }
 
-    tags.sort();
-    tags.dedup();
-    Ok(tags)
+        Kind::Commit => {
+            if local_sha(dir, &format!("{git_ref}^{{commit}}")).is_none()
+                && !try_run(Some(dir), &["fetch", "--depth", "1", "origin", git_ref])?
+            {
+                return Err(Error::failure(format!(
+                    "could not fetch commit {git_ref}; the remote may have pruned it"
+                )));
+            }
+            detach(dir, git_ref)
+        }
+    }
 }
 
 /// The commit currently checked out in a clone.
@@ -301,59 +338,6 @@ pub(crate) fn is_dirty(dir: &Path) -> Result<bool> {
 /// Whether `dir` looks like a git checkout at all.
 pub(crate) fn is_repo(dir: &Path) -> bool {
     dir.join(".git").exists()
-}
-
-/// Moves an existing clone onto an exact commit, fetching it if needed.
-pub(crate) fn fetch_commit(dir: &Path, sha: &str) -> Result<()> {
-    if local_sha(dir, &format!("{sha}^{{commit}}")).is_none()
-        && !try_run(Some(dir), &["fetch", "--depth", "1", "origin", sha])?
-    {
-        return Err(Error::failure(format!(
-            "could not fetch commit {sha}; the remote may have pruned it"
-        )));
-    }
-    detach(dir, sha)
-}
-
-/// Moves an existing clone onto a tag.
-pub(crate) fn fetch_tag(dir: &Path, tag: &str) -> Result<()> {
-    run(
-        Some(dir),
-        &[
-            "fetch",
-            "--depth",
-            "1",
-            "--force",
-            "origin",
-            &format!("refs/tags/{tag}:refs/tags/{tag}"),
-        ],
-    )?;
-    detach(dir, &format!("refs/tags/{tag}"))
-}
-
-/// Fast-forwards a branch checkout to the remote tip.
-///
-/// A hard reset rather than a pull: reference clones are read-only by
-/// contract, so there is nothing to preserve, and this cannot fail the way a
-/// non-fast-forward pull does.
-pub(crate) fn fetch_and_reset(dir: &Path, branch: &str) -> Result<()> {
-    run(
-        Some(dir),
-        &["fetch", "--depth", "1", "--force", "origin", branch],
-    )?;
-    detach(dir, "FETCH_HEAD")
-}
-
-/// Moves an existing clone onto a pin, the counterpart of [`clone_pinned`].
-///
-/// Takes the kind and ref loose rather than a [`Repo`], because `update --to`
-/// applies a pin the entry does not carry yet.
-pub(crate) fn move_to(dir: &Path, kind: Kind, git_ref: &str) -> Result<()> {
-    match kind {
-        Kind::Tag => fetch_tag(dir, git_ref),
-        Kind::Branch => fetch_and_reset(dir, git_ref),
-        Kind::Commit => fetch_commit(dir, git_ref),
-    }
 }
 
 #[cfg(test)]

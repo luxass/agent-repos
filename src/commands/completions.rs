@@ -1,18 +1,24 @@
-//! Shell completion scripts, emitted on stdout for the user to source.
+//! `agent-repos completions` — shell completion scripts, emitted on stdout for
+//! the user to source.
 
-use crate::error::{Error, Result};
+use crate::ui::{Error, Result};
 
-/// Resolves a shell name to its script. Knowing which shells exist belongs
-/// here, next to the scripts, rather than in the argument parser.
-pub(crate) fn script(shell: &str) -> Result<String> {
-    match shell {
-        "fish" => Ok(fish()),
-        "bash" => Ok(bash()),
-        "zsh" => Ok(zsh()),
-        other => Err(Error::usage(format!(
-            "unsupported shell `{other}` (expected fish, bash or zsh)"
-        ))),
-    }
+/// Knowing which shells exist belongs here, next to the scripts, rather than in
+/// the argument parser.
+pub(crate) fn completions(shell: &str) -> Result<()> {
+    let script = match shell {
+        "fish" => fish(),
+        "bash" => bash(),
+        "zsh" => zsh(),
+        other => {
+            return Err(Error::usage(format!(
+                "unsupported shell `{other}` (expected fish, bash or zsh)"
+            )));
+        }
+    };
+
+    print!("{script}");
+    Ok(())
 }
 
 /// Commands and their one-line descriptions, shared by every shell.

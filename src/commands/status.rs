@@ -1,7 +1,7 @@
 //! `agent-repos status` — drift, local edits and missing checkouts.
 
-use crate::error::Result;
 use crate::manifest::{Kind, Manifest};
+use crate::ui::Result;
 use crate::{git, ui};
 
 pub(crate) fn status() -> Result<()> {

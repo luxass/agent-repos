@@ -5,19 +5,23 @@
 //! operates on — the manifest, git, or the instruction files — not here.
 
 mod add;
+mod completions;
 mod init;
 mod list;
 mod pin;
 mod remove;
 mod restore;
 mod status;
+mod sync;
 mod update;
 
 pub(crate) use add::{AddRequest, RefSpec, add};
+pub(crate) use completions::completions;
 pub(crate) use init::init;
 pub(crate) use list::list;
 pub(crate) use pin::pin;
 pub(crate) use remove::remove;
 pub(crate) use restore::restore;
 pub(crate) use status::status;
+pub(crate) use sync::sync;
 pub(crate) use update::{UpdateRequest, update};

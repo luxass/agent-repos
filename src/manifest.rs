@@ -1,24 +1,27 @@
 //! The `.agent-repos/manifest.toml` manifest: a deliberately small subset of
 //! TOML.
 //!
-//! Supported: `#` comments, top-level `key = value` for strings, integers,
-//! booleans and arrays of strings, and `[[repo]]` array-of-tables. Strings are
-//! basic strings with `\"`, `\\`, `\n` and `\t` escapes.
+//! Supported: `#` comments, top-level `key = value` for strings, integers and
+//! arrays of strings, and `[[repo]]` array-of-tables. Strings are basic
+//! strings with `\"`, `\\`, `\n` and `\t` escapes.
 //!
 //! Not supported, by design: inline tables, multi-line strings, dotted keys,
-//! and values spanning lines. Unknown and repeated keys are hard errors rather
-//! than being silently dropped or resolved last-wins, so a typo never costs
-//! you a pin.
+//! and values spanning lines. An unknown key is a hard error rather than being
+//! silently dropped, and a key repeated inside a `[[repo]]` block is one too
+//! rather than resolving last-wins, so a typo never costs you a pin.
 //!
 //! Comments in the header, and comments immediately preceding a `[[repo]]`,
 //! are preserved across a rewrite. A trailing comment on a `key = value` line
 //! is parsed and discarded.
+//!
+//! Every key knows its own type, so there is no general "TOML value" here:
+//! [`string`], [`int`] and [`array`] parse straight into what the key needs.
 
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
-use crate::paths;
+use crate::files;
+use crate::ui::{Error, Result};
 
 pub(crate) const CONTROL_DIR: &str = ".agent-repos";
 pub(crate) const MANIFEST_PATH: &str = ".agent-repos/manifest.toml";
@@ -148,7 +151,7 @@ impl Manifest {
     }
 
     pub(crate) fn save(&self, root: &Path) -> Result<()> {
-        crate::fsx::write_atomic(&Self::path(root), &self.render())
+        files::write_atomic(&Self::path(root), &self.render())
     }
 
     /// Locates an entry by name. Commands hold on to the index rather than the
@@ -169,12 +172,12 @@ impl Manifest {
         let mut dir: Option<String> = None;
         let mut targets: Option<Vec<String>> = None;
         let mut repos: Vec<Repo> = Vec::new();
-        let mut current: Option<PartialRepo> = None;
+        let mut block: Option<Block> = None;
         let mut body_started = false;
 
         for (index, raw) in text.lines().enumerate() {
-            let line_no = index + 1;
             let line = raw.trim();
+            let line_no = index + 1;
 
             if line.is_empty() {
                 continue;
@@ -192,10 +195,10 @@ impl Manifest {
             body_started = true;
 
             if line == "[[repo]]" {
-                if let Some(partial) = current.take() {
-                    repos.push(partial.build()?);
+                if let Some(block) = block.take() {
+                    repos.push(block.build()?);
                 }
-                current = Some(PartialRepo::new(std::mem::take(&mut pending), line_no));
+                block = Some(Block::new(std::mem::take(&mut pending), line_no));
                 continue;
             }
 
@@ -205,20 +208,19 @@ impl Manifest {
                 )));
             }
 
-            let Some((key, rest)) = line.split_once('=') else {
+            let Some((key, value)) = line.split_once('=') else {
                 return Err(Error::failure(format!(
                     "line {line_no}: expected `key = value` (got {line})"
                 )));
             };
-            let key = key.trim();
-            let value = parse_value(rest.trim(), line_no)?;
+            let (key, value) = (key.trim(), value.trim());
 
-            match current.as_mut() {
-                Some(partial) => partial.set(key, value, line_no)?,
+            match block.as_mut() {
+                Some(block) => block.set(key, value, line_no)?,
                 None => match key {
-                    "version" => version = Some(value.int(key, line_no)?),
-                    "dir" => dir = Some(value.string(key, line_no)?),
-                    "targets" => targets = Some(value.array(key, line_no)?),
+                    "version" => version = Some(int(value, key, line_no)?),
+                    "dir" => dir = Some(string(value, key, line_no)?),
+                    "targets" => targets = Some(array(value, key, line_no)?),
                     other => {
                         return Err(Error::failure(format!(
                             "line {line_no}: unknown key {other:?}"
@@ -228,8 +230,8 @@ impl Manifest {
             }
         }
 
-        if let Some(partial) = current.take() {
-            repos.push(partial.build()?);
+        if let Some(block) = block.take() {
+            repos.push(block.build()?);
         }
 
         match version {
@@ -243,7 +245,7 @@ impl Manifest {
         }
 
         let dir = dir.unwrap_or_else(|| DEFAULT_DIR.to_string());
-        paths::validate_relative("dir", &dir)?;
+        files::validate_relative("dir", &dir)?;
 
         let manifest = Self {
             dir,
@@ -258,9 +260,9 @@ impl Manifest {
 
     fn validate(&self) -> Result<()> {
         for (index, repo) in self.repos.iter().enumerate() {
-            paths::validate_relative("path", &repo.path)?;
+            files::validate_relative("path", &repo.path)?;
 
-            if !paths::is_inside(&self.dir, &repo.path) {
+            if !files::is_inside(&self.dir, &repo.path) {
                 return Err(Error::failure(format!(
                     "entry `{}` has path {} outside the clone directory {}/",
                     repo.name, repo.path, self.dir
@@ -344,64 +346,59 @@ impl Manifest {
     }
 }
 
-fn duplicate(key: &str, line: usize) -> Error {
-    Error::failure(format!("line {line}: duplicate key {key:?}"))
-}
-
-/// A `[[repo]]` block being filled in, so that a missing key can be reported
-/// against the block's own line rather than the end of the file.
+/// A `[[repo]]` block being filled in.
+///
+/// This holds a real [`Repo`] rather than a parallel set of `Option` fields.
+/// An unset required key is simply the empty string, which the format cannot
+/// otherwise produce for a key that has to be there. `kind` is the exception —
+/// there is no empty [`Kind`] — so it waits beside the entry until
+/// [`Block::build`] moves it in.
 #[derive(Debug)]
-struct PartialRepo {
-    comments: Vec<String>,
-    line: usize,
-    name: Option<String>,
-    url: Option<String>,
-    git_ref: Option<String>,
+struct Block {
+    repo: Repo,
     kind: Option<Kind>,
-    path: Option<String>,
-    track: Option<String>,
-    desc: Option<String>,
-    usage: Option<String>,
+    /// The `[[repo]]` line itself, so that a missing key is reported against
+    /// the block rather than the end of the file.
+    line: usize,
 }
 
-impl PartialRepo {
+impl Block {
     fn new(comments: Vec<String>, line: usize) -> Self {
         Self {
-            comments,
-            line,
-            name: None,
-            url: None,
-            git_ref: None,
+            repo: Repo {
+                name: String::new(),
+                url: String::new(),
+                git_ref: String::new(),
+                // Replaced by `build`, which refuses a block without `kind`.
+                kind: Kind::Commit,
+                path: String::new(),
+                track: None,
+                desc: None,
+                usage: None,
+                comments,
+            },
             kind: None,
-            path: None,
-            track: None,
-            desc: None,
-            usage: None,
+            line,
         }
     }
 
     /// Records one `key = value` line. A repeated key is an error rather than
     /// last-wins, for the same reason an unknown key is: a typo must never
-    /// quietly decide the pin.
-    fn set(&mut self, key: &str, value: Value, line: usize) -> Result<()> {
-        // `kind` is the one key that is not stored as a string, so it is
-        // parsed here and the rest share a slot.
-        if key == "kind" {
-            let kind = Kind::parse(&value.string(key, line)?, line)?;
-            return match self.kind.replace(kind) {
-                None => Ok(()),
-                Some(_) => Err(duplicate(key, line)),
-            };
-        }
-
-        let slot = match key {
-            "name" => &mut self.name,
-            "url" => &mut self.url,
-            "ref" => &mut self.git_ref,
-            "path" => &mut self.path,
-            "track" => &mut self.track,
-            "desc" => &mut self.desc,
-            "use" => &mut self.usage,
+    /// quietly decide the pin. Every key answers that the same way — whether
+    /// the slot it writes to was already filled.
+    fn set(&mut self, key: &str, value: &str, line: usize) -> Result<()> {
+        let filled = match key {
+            "name" => fill(&mut self.repo.name, string(value, key, line)?),
+            "url" => fill(&mut self.repo.url, string(value, key, line)?),
+            "ref" => fill(&mut self.repo.git_ref, string(value, key, line)?),
+            "path" => fill(&mut self.repo.path, string(value, key, line)?),
+            "track" => self.repo.track.replace(string(value, key, line)?).is_some(),
+            "desc" => self.repo.desc.replace(string(value, key, line)?).is_some(),
+            "use" => self.repo.usage.replace(string(value, key, line)?).is_some(),
+            "kind" => {
+                let kind = Kind::parse(&string(value, key, line)?, line)?;
+                self.kind.replace(kind).is_some()
+            }
             other => {
                 return Err(Error::failure(format!(
                     "line {line}: unknown key {other:?} in [[repo]]"
@@ -409,115 +406,112 @@ impl PartialRepo {
             }
         };
 
-        match slot.replace(value.string(key, line)?) {
-            None => Ok(()),
-            Some(_) => Err(duplicate(key, line)),
+        if filled {
+            return Err(Error::failure(format!(
+                "line {line}: duplicate key {key:?}"
+            )));
         }
+        Ok(())
     }
 
-    fn build(self) -> Result<Repo> {
+    fn build(mut self) -> Result<Repo> {
         let line = self.line;
-        let required = |field: &str| {
+        let missing = |field: &str| {
             Error::failure(format!(
                 "line {line}: [[repo]] is missing required key `{field}`"
             ))
         };
 
-        Ok(Repo {
-            name: self.name.ok_or_else(|| required("name"))?,
-            url: self.url.ok_or_else(|| required("url"))?,
-            git_ref: self.git_ref.ok_or_else(|| required("ref"))?,
-            kind: self.kind.ok_or_else(|| required("kind"))?,
-            path: self.path.ok_or_else(|| required("path"))?,
-            track: self.track,
-            desc: self.desc,
-            usage: self.usage,
-            comments: self.comments,
-        })
+        // Checked in the order the manifest writes them, so the first thing
+        // reported is the first thing missing when reading top to bottom.
+        for (field, value) in [
+            ("name", &self.repo.name),
+            ("url", &self.repo.url),
+            ("ref", &self.repo.git_ref),
+        ] {
+            if value.is_empty() {
+                return Err(missing(field));
+            }
+        }
+        self.repo.kind = self.kind.ok_or_else(|| missing("kind"))?;
+        if self.repo.path.is_empty() {
+            return Err(missing("path"));
+        }
+
+        Ok(self.repo)
     }
 }
 
-#[derive(Debug)]
-enum Value {
-    Str(String),
-    Int(i64),
-    Bool,
-    Array(Vec<String>),
+/// Fills a required slot, answering whether it already held a value.
+fn fill(slot: &mut String, value: String) -> bool {
+    !std::mem::replace(slot, value).is_empty()
 }
 
-impl Value {
-    fn kind(&self) -> &'static str {
-        match self {
-            Self::Str(_) => "a string",
-            Self::Int(_) => "an integer",
-            Self::Bool => "a boolean",
-            Self::Array(_) => "an array",
-        }
+/// A quoted string.
+fn string(value: &str, key: &str, line: usize) -> Result<String> {
+    if !value.starts_with('"') {
+        return Err(Error::failure(format!(
+            "line {line}: {key} must be a string (strings must be quoted)"
+        )));
     }
 
-    fn string(self, key: &str, line: usize) -> Result<String> {
-        match self {
-            Self::Str(value) => Ok(value),
-            other => Err(Error::failure(format!(
-                "line {line}: {key} must be a string, got {}",
-                other.kind()
-            ))),
-        }
-    }
-
-    fn int(self, key: &str, line: usize) -> Result<i64> {
-        match self {
-            Self::Int(value) => Ok(value),
-            other => Err(Error::failure(format!(
-                "line {line}: {key} must be an integer, got {}",
-                other.kind()
-            ))),
-        }
-    }
-
-    fn array(self, key: &str, line: usize) -> Result<Vec<String>> {
-        match self {
-            Self::Array(value) => Ok(value),
-            other => Err(Error::failure(format!(
-                "line {line}: {key} must be an array of strings, got {}",
-                other.kind()
-            ))),
-        }
-    }
+    let (parsed, rest) = scan_string(value, line)?;
+    end_of_value(rest, line)?;
+    Ok(parsed)
 }
 
-fn parse_value(input: &str, line: usize) -> Result<Value> {
-    if input.starts_with('"') {
-        let (value, rest) = scan_string(input, line)?;
-        expect_end(rest, line)?;
-        return Ok(Value::Str(value));
-    }
+/// An integer. Any trailing comment is stripped as part of reading it, so
+/// there is nothing left over to check.
+fn int(value: &str, key: &str, line: usize) -> Result<i64> {
+    let token = value.split('#').next().unwrap_or_default().trim();
 
-    if input.starts_with('[') {
-        let (value, rest) = scan_array(input, line)?;
-        expect_end(rest, line)?;
-        return Ok(Value::Array(value));
-    }
+    token.parse().map_err(|_| {
+        Error::failure(format!(
+            "line {line}: {key} must be an integer (got {token:?})"
+        ))
+    })
+}
 
-    let token = input
-        .split('#')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+/// An array of quoted strings.
+fn array(value: &str, key: &str, line: usize) -> Result<Vec<String>> {
+    let Some(mut cursor) = value.strip_prefix('[') else {
+        return Err(Error::failure(format!(
+            "line {line}: {key} must be an array of strings"
+        )));
+    };
+    let mut out = Vec::new();
 
-    match token.as_str() {
-        "true" | "false" => Ok(Value::Bool),
-        "" => Err(Error::failure(format!("line {line}: missing value"))),
-        other => other.parse::<i64>().map(Value::Int).map_err(|_| {
-            Error::failure(format!(
-                "line {line}: {other:?} is not a string, integer or boolean \
-                 (strings must be quoted)"
-            ))
-        }),
+    loop {
+        cursor = cursor.trim_start();
+
+        if let Some(rest) = cursor.strip_prefix(']') {
+            return end_of_value(rest, line).map(|()| out);
+        }
+        if !cursor.starts_with('"') {
+            return Err(Error::failure(format!(
+                "line {line}: arrays may only contain quoted strings"
+            )));
+        }
+
+        let (parsed, rest) = scan_string(cursor, line)?;
+        out.push(parsed);
+        cursor = rest.trim_start();
+
+        if let Some(rest) = cursor.strip_prefix(',') {
+            cursor = rest;
+        } else if let Some(rest) = cursor.strip_prefix(']') {
+            return end_of_value(rest, line).map(|()| out);
+        } else {
+            return Err(Error::failure(format!(
+                "line {line}: expected ',' or ']' in array"
+            )));
+        }
     }
 }
 
+/// Reads one quoted string, returning it and whatever follows the closing
+/// quote. Shared by [`string`] and [`array`], which is why it hands back the
+/// remainder rather than checking it itself.
 fn scan_string(input: &str, line: usize) -> Result<(String, &str)> {
     let mut out = String::new();
     let mut chars = input.char_indices();
@@ -556,39 +550,8 @@ fn scan_string(input: &str, line: usize) -> Result<(String, &str)> {
     Err(Error::failure(format!("line {line}: unterminated string")))
 }
 
-fn scan_array(input: &str, line: usize) -> Result<(Vec<String>, &str)> {
-    let mut out = Vec::new();
-    let mut cursor = &input[1..];
-
-    loop {
-        cursor = cursor.trim_start();
-
-        if let Some(rest) = cursor.strip_prefix(']') {
-            return Ok((out, rest));
-        }
-        if !cursor.starts_with('"') {
-            return Err(Error::failure(format!(
-                "line {line}: arrays may only contain quoted strings"
-            )));
-        }
-
-        let (value, rest) = scan_string(cursor, line)?;
-        out.push(value);
-        cursor = rest.trim_start();
-
-        if let Some(rest) = cursor.strip_prefix(',') {
-            cursor = rest;
-        } else if let Some(rest) = cursor.strip_prefix(']') {
-            return Ok((out, rest));
-        } else {
-            return Err(Error::failure(format!(
-                "line {line}: expected ',' or ']' in array"
-            )));
-        }
-    }
-}
-
-fn expect_end(rest: &str, line: usize) -> Result<()> {
+/// Nothing may follow a value but whitespace and a comment.
+fn end_of_value(rest: &str, line: usize) -> Result<()> {
     let rest = rest.trim();
     if rest.is_empty() || rest.starts_with('#') {
         Ok(())
@@ -711,6 +674,14 @@ track = "main"
     }
 
     #[test]
+    fn a_repeated_key_is_caught_even_when_the_value_is_empty() {
+        // `desc = ""` is a real value, so a second one is still a duplicate.
+        let text = "version = 1\n[[repo]]\ndesc = \"\"\ndesc = \"x\"\n";
+        let err = Manifest::parse(text).unwrap_err();
+        assert!(err.to_string().contains("duplicate key \"desc\""), "{err}");
+    }
+
+    #[test]
     fn missing_version_is_rejected() {
         let err = Manifest::parse("dir = \"repos\"\n").unwrap_err();
         assert!(err.to_string().contains("missing required key `version`"));
@@ -825,9 +796,25 @@ track = "main"
 
     #[test]
     fn trailing_comments_on_values_are_ignored() {
-        let text = "version = 1 # the format version\ndir = \"repos\" # where clones go\n";
+        let text = "version = 1 # the format version\ndir = \"repos\" # where clones go\n\
+                    targets = [\"AGENTS.md\"] # and these\n";
         let manifest = Manifest::parse(text).unwrap();
         assert_eq!(manifest.dir, "repos");
+        assert_eq!(manifest.targets, vec!["AGENTS.md"]);
+    }
+
+    #[test]
+    fn trailing_text_after_a_value_is_rejected() {
+        for text in [
+            "version = 1\ndir = \"repos\" oops\n",
+            "version = 1\ntargets = [\"a\"] oops\n",
+        ] {
+            let err = Manifest::parse(text).unwrap_err();
+            assert!(
+                err.to_string().contains("unexpected trailing text"),
+                "{err}"
+            );
+        }
     }
 
     #[test]
@@ -840,6 +827,17 @@ track = "main"
     fn unterminated_string_is_rejected() {
         let err = Manifest::parse("version = 1\ndir = \"repos\n").unwrap_err();
         assert!(err.to_string().contains("unterminated string"), "{err}");
+    }
+
+    #[test]
+    fn a_non_integer_version_is_rejected() {
+        for text in ["version = true\n", "version = \"1\"\n", "version = \n"] {
+            let err = Manifest::parse(text).unwrap_err();
+            assert!(
+                err.to_string().contains("version must be an integer"),
+                "{text:?}: {err}"
+            );
+        }
     }
 
     #[test]
