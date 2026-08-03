@@ -28,56 +28,55 @@ const CLOSE_PREFIX: &str = "/agent-repos:";
 const DEFAULT_BLOCKS: &[&str] = &["guidance", "repos"];
 
 #[derive(Debug, PartialEq, Eq)]
-struct Marker {
-    name: String,
-    attrs: Vec<(String, String)>,
+struct Marker<'a> {
+    name: &'a str,
+    attrs: Vec<(&'a str, &'a str)>,
+}
+
+impl Marker<'_> {
+    fn attr(&self, key: &str) -> Option<&str> {
+        self.attrs
+            .iter()
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| *value)
+    }
 }
 
 /// Parses `<!-- agent-repos:name key=value -->`, returning `None` for any line
 /// that is not one of our markers.
-fn parse_open(line: &str) -> Option<Marker> {
-    let body = html_comment(line)?;
-    let rest = body.strip_prefix(OPEN_PREFIX)?;
-
+fn parse_open(line: &str) -> Option<Marker<'_>> {
+    let rest = html_comment(line)?.strip_prefix(OPEN_PREFIX)?;
     let mut parts = rest.split_whitespace();
-    let name = parts.next()?.to_string();
 
-    let attrs = parts
-        .filter_map(|part| {
-            part.split_once('=')
-                .map(|(key, value)| (key.to_string(), value.trim_matches('"').to_string()))
-        })
-        .collect();
-
-    Some(Marker { name, attrs })
+    Some(Marker {
+        name: parts.next()?,
+        attrs: parts
+            .filter_map(|part| part.split_once('='))
+            .map(|(key, value)| (key, value.trim_matches('"')))
+            .collect(),
+    })
 }
 
 /// Parses `<!-- /agent-repos:name -->`.
-fn parse_close(line: &str) -> Option<String> {
-    let body = html_comment(line)?;
-    let name = body.strip_prefix(CLOSE_PREFIX)?;
-    Some(name.trim().to_string())
+fn parse_close(line: &str) -> Option<&str> {
+    Some(html_comment(line)?.strip_prefix(CLOSE_PREFIX)?.trim())
 }
 
 fn html_comment(line: &str) -> Option<&str> {
-    let trimmed = line.trim();
-    trimmed
+    line.trim()
         .strip_prefix("<!--")?
         .strip_suffix("-->")
         .map(str::trim)
 }
 
-fn attr<'a>(marker: &'a Marker, key: &str) -> Option<&'a str> {
-    marker
-        .attrs
-        .iter()
-        .find(|(name, _)| name == key)
-        .map(|(_, value)| value.as_str())
-}
-
 /// Produces the body for one block.
-fn render_block(manifest: &Manifest, marker: &Marker, file: &str, line: usize) -> Result<String> {
-    let fields: Vec<String> = match attr(marker, "fields") {
+fn render_block(
+    manifest: &Manifest,
+    marker: &Marker<'_>,
+    file: &str,
+    line: usize,
+) -> Result<String> {
+    let fields: Vec<String> = match marker.attr("fields") {
         Some(list) => list
             .split(',')
             .map(str::trim)
@@ -92,10 +91,10 @@ fn render_block(manifest: &Manifest, marker: &Marker, file: &str, line: usize) -
 
     let located = |err: Error| Error::failure(format!("{file}:{line}: {err}"));
 
-    match marker.name.as_str() {
+    match marker.name {
         "guidance" => Ok(render::guidance(&manifest.dir)),
 
-        "repos" => match attr(marker, "format").unwrap_or("table") {
+        "repos" => match marker.attr("format").unwrap_or("table") {
             "table" => render::repos_table(manifest, &fields).map_err(located),
             "list" => render::repos_list(manifest, &fields).map_err(located),
             other => Err(Error::failure(format!(
@@ -104,7 +103,7 @@ fn render_block(manifest: &Manifest, marker: &Marker, file: &str, line: usize) -
         },
 
         "repo" => {
-            let Some(name) = attr(marker, "name") else {
+            let Some(name) = marker.attr("name") else {
                 return Err(Error::failure(format!(
                     "{file}:{line}: the `repo` block needs a name, \
                      e.g. <!-- agent-repos:repo name=effect -->"
@@ -152,9 +151,8 @@ fn rewrite(text: &str, manifest: &Manifest, file: &str) -> Result<String> {
         };
 
         let open_line = index + 1;
-        let close = (index + 1..lines.len()).find(|&candidate| {
-            parse_close(lines[candidate]).is_some_and(|name| name == marker.name)
-        });
+        let close = (index + 1..lines.len())
+            .find(|&candidate| parse_close(lines[candidate]) == Some(marker.name));
 
         let Some(close) = close else {
             return Err(Error::failure(format!(
@@ -327,15 +325,15 @@ mod tests {
         assert_eq!(
             parse_open("<!-- agent-repos:repos -->"),
             Some(Marker {
-                name: "repos".to_string(),
+                name: "repos",
                 attrs: Vec::new()
             })
         );
 
         let marker = parse_open("<!-- agent-repos:repos fields=name,ref format=list -->").unwrap();
         assert_eq!(marker.name, "repos");
-        assert_eq!(attr(&marker, "fields"), Some("name,ref"));
-        assert_eq!(attr(&marker, "format"), Some("list"));
+        assert_eq!(marker.attr("fields"), Some("name,ref"));
+        assert_eq!(marker.attr("format"), Some("list"));
 
         // Indented markers are still markers.
         assert!(parse_open("   <!-- agent-repos:paths -->").is_some());
@@ -346,10 +344,7 @@ mod tests {
 
     #[test]
     fn close_markers_parse() {
-        assert_eq!(
-            parse_close("<!-- /agent-repos:repos -->"),
-            Some("repos".to_string())
-        );
+        assert_eq!(parse_close("<!-- /agent-repos:repos -->"), Some("repos"));
         assert_eq!(parse_close("<!-- agent-repos:repos -->"), None);
     }
 
