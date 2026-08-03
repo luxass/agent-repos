@@ -168,7 +168,7 @@ fn name_from_url(url: &str) -> Result<String> {
         None
     } else {
         trimmed
-            .rsplit(['/', ':'])
+            .rsplit(['/', '\\', ':'])
             .next()
             .filter(|segment| !segment.is_empty())
     };
