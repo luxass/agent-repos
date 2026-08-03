@@ -3,9 +3,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
 use crate::manifest::Manifest;
-use crate::{git, paths, sync, ui};
+use crate::ui::{Error, Result};
+use crate::{files, git, instructions, ui};
 
 pub(crate) fn remove(name: String, keep_files: bool, yes: bool) -> Result<()> {
     let root = git::root()?;
@@ -31,7 +31,7 @@ pub(crate) fn remove(name: String, keep_files: bool, yes: bool) -> Result<()> {
 
     manifest.repos.remove(index);
     manifest.save(&root)?;
-    sync::refresh(&root, &manifest);
+    instructions::refresh(&root, &manifest);
 
     if let Some(resolved) = resolved {
         fs::remove_dir_all(&resolved)
@@ -53,8 +53,8 @@ pub(crate) fn remove(name: String, keep_files: bool, yes: bool) -> Result<()> {
 /// configured clone directory, it must actually be a git checkout, and after
 /// resolving symlinks it must still be under the repository root.
 fn check_removable(root: &Path, clone_dir: &str, path: &str) -> Result<PathBuf> {
-    paths::validate_relative("path", path)?;
-    if !paths::is_inside(clone_dir, path) {
+    files::validate_relative("path", path)?;
+    if !files::is_inside(clone_dir, path) {
         return Err(Error::failure(format!(
             "refusing to delete {path}: outside {clone_dir}/"
         )));

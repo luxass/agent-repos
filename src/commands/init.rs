@@ -3,9 +3,9 @@
 use std::fs;
 use std::path::Path;
 
-use crate::error::{Error, Result};
 use crate::manifest::{DEFAULT_DIR, DEFAULT_TARGET, LOCK_PATH, MANIFEST_PATH, Manifest};
-use crate::{fsx, git, paths, ui};
+use crate::ui::{Error, Result};
+use crate::{files, git, ui};
 
 /// Files that are treated as agent instructions when none are configured.
 const KNOWN_TARGETS: &[&str] = &["AGENTS.md", "CLAUDE.md", "AGENT.md"];
@@ -23,7 +23,7 @@ pub(crate) fn init(dir: Option<String>, targets: Vec<String>, no_instructions: b
     };
 
     if let Some(dir) = dir {
-        paths::validate_relative("dir", &dir)?;
+        files::validate_relative("dir", &dir)?;
         manifest.dir = dir;
     }
 
@@ -31,7 +31,7 @@ pub(crate) fn init(dir: Option<String>, targets: Vec<String>, no_instructions: b
         Vec::new()
     } else if !targets.is_empty() {
         for target in &targets {
-            paths::validate_relative("target", target)?;
+            files::validate_relative("target", target)?;
         }
         targets
     } else if manifest.targets.is_empty() {
@@ -111,6 +111,6 @@ fn ensure_gitignore(root: &Path, entry: &str) -> Result<bool> {
     next.push_str(entry);
     next.push('\n');
 
-    fsx::write_atomic(&file, &next)?;
+    files::write_atomic(&file, &next)?;
     Ok(true)
 }

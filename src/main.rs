@@ -11,16 +11,11 @@
 
 mod cli;
 mod commands;
-mod error;
-mod fsx;
+mod files;
 mod git;
-mod json;
+mod instructions;
 mod manifest;
-mod paths;
-mod render;
-mod sync;
 mod ui;
-mod version;
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();

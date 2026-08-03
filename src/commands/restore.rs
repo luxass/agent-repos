@@ -3,8 +3,8 @@
 //! This is the fresh-checkout path: the clone directory is gitignored, so a
 //! teammate has nothing until this runs.
 
-use crate::error::{Error, Result};
 use crate::manifest::Manifest;
+use crate::ui::{Error, Result};
 use crate::{git, ui};
 
 pub(crate) fn restore() -> Result<()> {
