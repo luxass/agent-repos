@@ -184,19 +184,26 @@ pub(crate) fn clone_pinned(repo: &Repo, dest: &Path) -> Result<()> {
 
     let result = match repo.kind {
         // A named ref clones shallowly in one shot.
-        Kind::Tag | Kind::Branch => run(
-            None,
-            &[
-                "clone",
-                "--depth",
-                "1",
-                "--single-branch",
-                "--branch",
-                &repo.git_ref,
-                &repo.url,
-                &target,
-            ],
-        ),
+        Kind::Tag | Kind::Branch => {
+            let cloned = run(
+                None,
+                &[
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--single-branch",
+                    "--branch",
+                    &repo.git_ref,
+                    &repo.url,
+                    &target,
+                ],
+            );
+            if repo.kind == Kind::Branch {
+                cloned.and_then(|()| detach(dest, "HEAD"))
+            } else {
+                cloned
+            }
+        }
         Kind::Commit => clone_commit(&repo.url, &repo.git_ref, repo.track.as_deref(), dest),
     };
 
@@ -322,7 +329,7 @@ pub(crate) fn short(git_ref: &str) -> String {
 pub(crate) fn drifted(dir: &Path, repo: &Repo, head: &str) -> bool {
     let expected = match repo.kind {
         Kind::Commit => Some(repo.git_ref.clone()),
-        Kind::Tag => local_sha(dir, &format!("refs/tags/{}", repo.git_ref)),
+        Kind::Tag => local_sha(dir, &format!("refs/tags/{}^{{commit}}", repo.git_ref)),
         Kind::Branch => None,
     };
     expected.is_some_and(|sha| sha != head)
