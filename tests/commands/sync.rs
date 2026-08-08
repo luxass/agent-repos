@@ -115,6 +115,37 @@ fn repository_name_cannot_change_guidance_markup() {
     );
 }
 
+// Windows cannot derive a checkout path from the punctuation-heavy name, but
+// the name is valid repository metadata when paired with an explicit path.
+#[cfg(windows)]
+#[test]
+fn repository_name_with_explicit_path_cannot_change_guidance_markup() {
+    let up = Upstream::new("sync-markdown-name-windows");
+    let project = TestGitRepo::new("sync-markdown-name-windows");
+    project.run(&["init"]);
+    let path = format!("{DEFAULT_REPOS}/effect");
+
+    let result = project.run(&[
+        "add",
+        &up.url(),
+        "--tag",
+        "v1.0.0",
+        "--name",
+        "effect_*[docs]~&copy;",
+        "--path",
+        &path,
+        "--use",
+        "Inspect this repository.",
+    ]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+
+    let text = project.agents_md();
+    assert!(
+        text.contains("- **effect\\_\\*\\[docs\\]\\~\\&copy;** — Inspect this repository."),
+        "{text}"
+    );
+}
+
 #[test]
 fn guidance_uses_meaningful_values_in_manifest_order() {
     let project = TestGitRepo::new("sync-use-order");
