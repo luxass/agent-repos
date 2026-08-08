@@ -29,11 +29,146 @@ fn sync_fills_blocks_and_leaves_prose_alone() {
 }
 
 #[test]
+fn repository_use_is_named_guidance_and_the_table_remains() {
+    let up = Upstream::new("sync-use-guidance");
+    let project = TestGitRepo::new("sync-use-guidance");
+    project.run(&["init"]);
+
+    let usage = "When looking to use Better Auth, inspect `repos/better-auth/`.";
+    let result = project.run(&[
+        "add",
+        &up.url(),
+        "--tag",
+        "v1.0.0",
+        "--name",
+        "better-auth",
+        "--use",
+        usage,
+    ]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+
+    let text = project.agents_md();
+    assert!(
+        text.contains(&format!("- **better-auth** — {usage}")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "| better-auth | v1.0.0 | {DEFAULT_REPOS}/better-auth |  |"
+        )),
+        "{text}"
+    );
+}
+
+#[test]
+fn multiline_repository_use_stays_in_one_guidance_item() {
+    let up = Upstream::new("sync-multiline-use");
+    let project = TestGitRepo::new("sync-multiline-use");
+    project.run(&["init"]);
+
+    let result = project.run(&[
+        "add",
+        &up.url(),
+        "--tag",
+        "v1.0.0",
+        "--name",
+        "effect",
+        "--use",
+        "Read `LLMS.md` first.\nThen inspect the source.",
+    ]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+
+    let text = project.agents_md();
+    assert!(
+        text.contains("- **effect** — Read `LLMS.md` first.\n  Then inspect the source."),
+        "{text}"
+    );
+}
+
+#[test]
+fn repository_name_cannot_change_guidance_markup() {
+    let up = Upstream::new("sync-markdown-name");
+    let project = TestGitRepo::new("sync-markdown-name");
+    project.run(&["init"]);
+
+    let result = project.run(&[
+        "add",
+        &up.url(),
+        "--tag",
+        "v1.0.0",
+        "--name",
+        "effect_*[docs]",
+        "--use",
+        "Inspect this repository.",
+    ]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+
+    let text = project.agents_md();
+    assert!(
+        text.contains("- **effect\\_\\*\\[docs\\]** — Inspect this repository."),
+        "{text}"
+    );
+}
+
+#[test]
+fn guidance_uses_meaningful_values_in_manifest_order() {
+    let project = TestGitRepo::new("sync-use-order");
+    let dir = project.path();
+    project.run(&["init"]);
+
+    fs::write(
+        dir.join(MANIFEST_PATH),
+        format!(
+            "version = 1\ndir = \"{DEFAULT_REPOS}\"\ntargets = [\"AGENTS.md\"]\n\n\
+             [[repo]]\nname = \"first\"\nurl = \"https://example.invalid/first\"\n\
+             ref = \"v1\"\nkind = \"tag\"\npath = \"{DEFAULT_REPOS}/first\"\n\
+             use = \"First guidance.\"\n\n\
+             [[repo]]\nname = \"missing\"\nurl = \"https://example.invalid/missing\"\n\
+             ref = \"v1\"\nkind = \"tag\"\npath = \"{DEFAULT_REPOS}/missing\"\n\n\
+             [[repo]]\nname = \"blank\"\nurl = \"https://example.invalid/blank\"\n\
+             ref = \"v1\"\nkind = \"tag\"\npath = \"{DEFAULT_REPOS}/blank\"\n\
+             use = \"   \"\n\n\
+             [[repo]]\nname = \"last\"\nurl = \"https://example.invalid/last\"\n\
+             ref = \"v1\"\nkind = \"tag\"\npath = \"{DEFAULT_REPOS}/last\"\n\
+             use = \"Last guidance.\"\n"
+        ),
+    )
+    .unwrap();
+
+    let result = project.run(&["sync"]);
+    assert_eq!(result.code, 0, "stderr: {}", result.stderr);
+
+    let text = project.agents_md();
+    let first = text.find("- **first** — First guidance.").unwrap();
+    let last = text.find("- **last** — Last guidance.").unwrap();
+    assert!(first < last, "{text}");
+    assert!(!text.contains("- **missing** —"), "{text}");
+    assert!(!text.contains("- **blank** —"), "{text}");
+    assert!(
+        text.contains(&format!("| missing | v1 | {DEFAULT_REPOS}/missing |  |")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("| blank | v1 | {DEFAULT_REPOS}/blank |  |")),
+        "{text}"
+    );
+}
+
+#[test]
 fn sync_is_idempotent_and_check_agrees() {
     let up = Upstream::new("sync-idem");
     let project = TestGitRepo::new("sync-idem");
     project.run(&["init"]);
-    project.run(&["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+    project.run(&[
+        "add",
+        &up.url(),
+        "--tag",
+        "v1.0.0",
+        "--name",
+        "up",
+        "--use",
+        "Inspect this repository.",
+    ]);
 
     project.run(&["sync"]);
     let once = project.agents_md();
@@ -54,11 +189,20 @@ fn sync_check_exits_one_when_a_block_is_stale() {
     let project = TestGitRepo::new("sync-drift");
     let dir = project.path();
     project.run(&["init"]);
-    project.run(&["add", &up.url(), "--tag", "v1.0.0", "--name", "up"]);
+    project.run(&[
+        "add",
+        &up.url(),
+        "--tag",
+        "v1.0.0",
+        "--name",
+        "up",
+        "--use",
+        "Inspect this repository.",
+    ]);
 
     let tampered = project
         .agents_md()
-        .replace(&format!("{DEFAULT_REPOS}/up"), "somewhere-else");
+        .replace("Inspect this repository.", "Tampered guidance.");
     fs::write(dir.join("AGENTS.md"), &tampered).unwrap();
 
     let check = project.run(&["sync", "--check"]);

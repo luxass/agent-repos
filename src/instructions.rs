@@ -152,9 +152,23 @@ fn cell(repo: &Repo, field: &Field) -> String {
     (field.read)(repo).replace('|', "\\|")
 }
 
-/// Prose telling an agent how to treat the clone directory.
-fn guidance(dir: &str) -> String {
-    format!(
+/// Escapes characters that could give a repository name meaning inside the
+/// bold label used by a guidance item.
+fn markdown_label(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(ch, '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+/// Prose telling an agent how to treat the clone directory and when to consult
+/// a particular repository.
+fn guidance(manifest: &Manifest) -> String {
+    let mut text = format!(
         "## Vendored Repositories\n\
          \n\
          This project vendors external repositories under `{dir}/` as read-only \
@@ -169,8 +183,21 @@ fn guidance(dir: &str) -> String {
          implementation details.\n\
          - Each clone is pinned to the ref recorded in \
          `.agent-repos/manifest.toml`. If one is missing, run \
-         `agent-repos restore` rather than cloning it by hand."
-    )
+         `agent-repos restore` rather than cloning it by hand.",
+        dir = manifest.dir
+    );
+
+    for repo in &manifest.repos {
+        if let Some(usage) = &repo.usage
+            && !usage.trim().is_empty()
+        {
+            let name = markdown_label(&repo.name);
+            let usage = usage.replace('\n', "\n  ");
+            text.push_str(&format!("\n- **{name}** — {usage}"));
+        }
+    }
+
+    text
 }
 
 /// Every entry, as a markdown table or as a bullet list.
@@ -269,7 +296,7 @@ fn render_block(
     let located = |err: Error| Error::failure(format!("{file}:{line}: {err}"));
 
     match marker.name {
-        "guidance" => Ok(guidance(&manifest.dir)),
+        "guidance" => Ok(guidance(manifest)),
 
         "repos" => {
             repos(manifest, &fields, marker.attr("format").unwrap_or("table")).map_err(located)

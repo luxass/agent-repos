@@ -43,6 +43,8 @@ Pass a full Git URL, local path, SCP-style SSH remote, or forge shorthand to
 agent-repos add github:Effect-TS/effect --tag v3.12.0
 agent-repos add gitlab:group/repo --branch main
 agent-repos add git.example.com:owner/repo --commit 9f3a1c2
+agent-repos add github:better-auth/better-auth --use \
+  'When working with Better Auth, inspect `.agent-repos/repos/better-auth/` first.'
 ```
 
 Command options control how entries are recorded and maintained:
@@ -50,7 +52,8 @@ Command options control how entries are recorded and maintained:
 - `--tag`, `--branch`, and `--commit` select the ref kind.
 - Omitting a ref pins the default branch's current head commit.
 - `--name` and `--path` override the generated name and checkout path.
-- `--desc` and `--use` tell agents why and when to consult the repository.
+- `--desc` explains why a repository is present; `--use` adds agent guidance
+  for when and how to consult it.
 - `update --to REF` moves an entry to a specific ref.
 - `update --latest` finds the newest tag or tracked branch head.
 - `--yes` accepts update and removal prompts.
@@ -76,7 +79,7 @@ ref = "v3.12.0"
 kind = "tag"
 path = ".agent-repos/repos/effect"
 desc = "Effect runtime this service is built on"
-use = "API signatures, Layer/Runtime composition, test style"
+use = "When writing Effect code, inspect `.agent-repos/repos/effect/` for idiomatic APIs, tests, and module structure."
 ```
 
 Configured instruction files may contain generated blocks such as:
@@ -90,6 +93,15 @@ Configured instruction files may contain generated blocks such as:
 ```
 
 `agent-repos sync` refills those blocks while preserving all text outside them.
+Each non-empty `use` value becomes a named bullet in the generated guidance:
+
+```markdown
+- **effect** — When writing Effect code, inspect `.agent-repos/repos/effect/` for idiomatic APIs, tests, and module structure.
+```
+
+The text is emitted as user-authored Markdown without path interpolation or
+generated wording. Edit `use` in `.agent-repos/manifest.toml`, then run
+`agent-repos sync` to refresh every configured instruction file.
 
 ## Development
 
