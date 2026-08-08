@@ -87,6 +87,9 @@ fn multiline_repository_use_stays_in_one_guidance_item() {
     );
 }
 
+// `add` derives the checkout path from this deliberately punctuation-heavy
+// name. The `*` exercises Markdown escaping but is not a legal Windows path.
+#[cfg(not(windows))]
 #[test]
 fn repository_name_cannot_change_guidance_markup() {
     let up = Upstream::new("sync-markdown-name");
