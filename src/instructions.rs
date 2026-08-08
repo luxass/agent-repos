@@ -157,7 +157,10 @@ fn cell(repo: &Repo, field: &Field) -> String {
 fn markdown_label(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {
-        if matches!(ch, '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>') {
+        if matches!(
+            ch,
+            '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '~' | '&'
+        ) {
             escaped.push('\\');
         }
         escaped.push(ch);

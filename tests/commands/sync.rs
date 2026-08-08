@@ -48,8 +48,10 @@ fn repository_use_is_named_guidance_and_the_table_remains() {
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
 
     let text = project.agents_md();
+    let bullet = format!("- **better-auth** — {usage}");
+    assert!(text.lines().any(|line| line == bullet), "{text}");
     assert!(
-        text.contains(&format!("- **better-auth** — {usage}")),
+        text.find(&bullet).unwrap() < text.find("<!-- agent-repos:repos -->").unwrap(),
         "{text}"
     );
     assert!(
@@ -97,7 +99,7 @@ fn repository_name_cannot_change_guidance_markup() {
         "--tag",
         "v1.0.0",
         "--name",
-        "effect_*[docs]",
+        "effect_*[docs]~&copy;",
         "--use",
         "Inspect this repository.",
     ]);
@@ -105,7 +107,7 @@ fn repository_name_cannot_change_guidance_markup() {
 
     let text = project.agents_md();
     assert!(
-        text.contains("- **effect\\_\\*\\[docs\\]** — Inspect this repository."),
+        text.contains("- **effect\\_\\*\\[docs\\]\\~\\&copy;** — Inspect this repository."),
         "{text}"
     );
 }
@@ -240,7 +242,7 @@ fn every_block_type_renders() {
 
     fs::write(
         dir.join("AGENTS.md"),
-        "<!-- agent-repos:repos fields=name,ref,url format=list -->\n\
+        "<!-- agent-repos:repos fields=name,ref,url,use format=list -->\n\
          <!-- /agent-repos:repos -->\n\n\
          <!-- agent-repos:repo name=effect -->\n\
          <!-- /agent-repos:repo -->\n\n\
@@ -253,7 +255,15 @@ fn every_block_type_renders() {
     assert_eq!(result.code, 0, "stderr: {}", result.stderr);
 
     let text = project.agents_md();
-    assert!(text.contains("- **effect** — Version: v1.0.0"), "{text}");
+    assert!(
+        text.lines().any(|line| {
+            line == format!(
+                "- **effect** — Version: v1.0.0, URL: {}, Consult for: API shapes",
+                up.url()
+            )
+        }),
+        "{text}"
+    );
     assert!(
         text.contains("**effect** — pinned to `v1.0.0` (tag)"),
         "{text}"

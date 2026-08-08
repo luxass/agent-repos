@@ -74,7 +74,7 @@ fn fish() -> String {
          complete -c agent-repos -n '__fish_seen_subcommand_from add' -s n -l name -r -d 'Entry name'\n\
          complete -c agent-repos -n '__fish_seen_subcommand_from add' -s p -l path -r -d 'Checkout path'\n\
          complete -c agent-repos -n '__fish_seen_subcommand_from add' -l desc -r -d 'Why this repo is here'\n\
-         complete -c agent-repos -n '__fish_seen_subcommand_from add' -l use -r -d 'Agent guidance for this repo'\n\
+         complete -c agent-repos -n '__fish_seen_subcommand_from add' -l use -r -d 'Agent guidance for this repo.'\n\
          complete -c agent-repos -n '__fish_seen_subcommand_from add' -l no-sync -d 'Skip refreshing instructions'\n\
          complete -c agent-repos -n '__fish_seen_subcommand_from update' -l to -r -d 'Repoint to a ref'\n\
          complete -c agent-repos -n '__fish_seen_subcommand_from update' -l latest -d 'Advance to the newest'\n\
