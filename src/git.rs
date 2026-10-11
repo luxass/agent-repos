@@ -180,6 +180,20 @@ pub(crate) fn remote_tags(url: &str) -> Result<Vec<String>> {
 /// never blocks a retry, and no caller can skip that by reaching for
 /// [`clone_commit`] directly.
 pub(crate) fn clone_pinned(repo: &Repo, dest: &Path) -> Result<()> {
+    // Claim the destination before running Git. Only the operation that
+    // created it may clean it up after a failure.
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            Error::failure(format!("could not create {}: {err}", parent.display()))
+        })?;
+    }
+    fs::create_dir(dest).map_err(|err| {
+        Error::failure(format!(
+            "could not create checkout {}: {err}",
+            dest.display()
+        ))
+    })?;
+
     let target = dest.to_string_lossy().into_owned();
 
     let result = match repo.kind {
@@ -207,7 +221,7 @@ pub(crate) fn clone_pinned(repo: &Repo, dest: &Path) -> Result<()> {
         Kind::Commit => clone_commit(&repo.url, &repo.git_ref, repo.track.as_deref(), dest),
     };
 
-    if result.is_err() && dest.exists() {
+    if result.is_err() {
         let _ = fs::remove_dir_all(dest);
     }
     result

@@ -60,10 +60,6 @@ pub(crate) fn add(request: AddRequest) -> Result<()> {
     validate_addition(&manifest, &name, &path)?;
 
     let dest = root.join(&path);
-    if dest.exists() {
-        return Err(Error::failure(format!("{path} already exists")));
-    }
-
     // Resolve the pin before cloning, so a typo in a tag fails fast with a
     // message about the tag rather than a wall of git output.
     let (kind, git_ref, track) = match ref_spec {
