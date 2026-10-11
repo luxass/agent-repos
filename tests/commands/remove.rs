@@ -74,7 +74,7 @@ fn remove_refuses_a_directory_that_is_not_a_checkout() {
 
 #[cfg(unix)]
 #[test]
-fn remove_refuses_a_checkout_symlinked_outside_the_repository() {
+fn remove_refuses_linked_checkouts_without_deleting_their_targets() {
     use std::os::unix::fs::symlink;
 
     let upstream = Upstream::new("remove-symlink");
@@ -85,21 +85,30 @@ fn remove_refuses_a_checkout_symlinked_outside_the_repository() {
     let path = project.checkout("up");
     fs::remove_dir_all(&path).unwrap();
     let upstream_path = std::path::PathBuf::from(upstream.url());
-    symlink(&upstream_path, &path).unwrap();
+    assert_eq!(
+        project
+            .run(&["add", &upstream.url(), "--tag", "v1.0.0", "--name", "other"])
+            .code,
+        0
+    );
 
     let before = project.manifest();
-    let result = project.run(&["remove", "up", "--yes"]);
+    for (target, diagnostic) in [
+        (upstream_path, "resolves outside the repository"),
+        (project.checkout("other"), "resolves through a symlink"),
+        (project.path().to_path_buf(), "resolves through a symlink"),
+    ] {
+        symlink(&target, &path).unwrap();
+        let result = project.run(&["remove", "up", "--yes"]);
 
-    assert_eq!(result.code, 1);
-    assert!(
-        result.stderr.contains("resolves outside the repository"),
-        "{}",
-        result.stderr
-    );
-    assert!(upstream_path.join("lib.txt").exists(), "target untouched");
-    assert_eq!(
-        project.manifest(),
-        before,
-        "the entry must remain configured"
-    );
+        assert_eq!(result.code, 1, "{}", result.stderr);
+        assert!(result.stderr.contains(diagnostic), "{}", result.stderr);
+        assert!(target.join(".git").exists(), "target untouched");
+        assert_eq!(
+            project.manifest(),
+            before,
+            "the entry must remain configured"
+        );
+        fs::remove_file(&path).unwrap();
+    }
 }
