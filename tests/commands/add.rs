@@ -67,6 +67,75 @@ fn concurrent_adds_preserve_every_manifest_entry() {
 }
 
 #[test]
+fn add_leaves_an_existing_destination_untouched() {
+    let up = Upstream::new("occupied-add");
+    let project = TestGitRepo::new("occupied-add");
+    assert_eq!(project.run(&["init", "--no-instructions"]).code, 0);
+    let dest = project.checkout("up");
+    fs::create_dir_all(&dest).unwrap();
+    fs::write(dest.join("keep.txt"), "user data\n").unwrap();
+    let before = project.manifest();
+
+    for pin in [["--tag", "v1.0.0"], ["--commit", up.first()]] {
+        let result = project.run(&[
+            "add",
+            &up.url(),
+            pin[0],
+            pin[1],
+            "--name",
+            "up",
+            "--no-sync",
+        ]);
+        assert_eq!(result.code, 1, "{}", result.stderr);
+        assert_eq!(
+            fs::read_to_string(dest.join("keep.txt")).unwrap(),
+            "user data\n"
+        );
+        assert!(!dest.join(".git").exists());
+        assert_eq!(project.manifest(), before);
+    }
+}
+
+#[test]
+fn concurrent_adds_to_the_same_path_leave_the_winning_checkout_intact() {
+    let up = Upstream::new("concurrent-same-path");
+    let project = TestGitRepo::new("concurrent-same-path");
+    assert_eq!(project.run(&["init", "--no-instructions"]).code, 0);
+
+    let children = [0, 1].map(|_| {
+        project
+            .command(&[
+                "add",
+                &up.url(),
+                "--tag",
+                "v1.0.0",
+                "--name",
+                "up",
+                "--no-sync",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
+    let outputs = children.map(|child| child.wait_with_output().unwrap());
+    assert_eq!(
+        outputs
+            .iter()
+            .filter(|output| output.status.success())
+            .count(),
+        1,
+        "{outputs:?}"
+    );
+    assert_eq!(project.manifest().matches("name = \"up\"").count(), 1);
+    assert!(project.checkout("up").join(".git").is_dir());
+    assert_eq!(
+        fs::read_to_string(project.checkout("up").join("lib.txt")).unwrap(),
+        "v1\n"
+    );
+}
+
+#[test]
 fn add_without_a_ref_pins_the_default_head_commit() {
     let up = Upstream::new("head");
     let project = TestGitRepo::new("add-head");

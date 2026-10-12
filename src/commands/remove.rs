@@ -48,10 +48,9 @@ pub(crate) fn remove(name: String, keep_files: bool, yes: bool) -> Result<()> {
 
 /// Verifies a clone directory is safe to delete and returns the resolved path.
 ///
-/// Four independent checks, because this is the one operation that destroys
-/// data: the path must be relative and traversal-free, it must sit inside the
-/// configured clone directory, it must actually be a git checkout, and after
-/// resolving symlinks it must still be under the repository root.
+/// The path must be relative, inside the configured clone directory, and a
+/// git checkout. Resolving it must keep it under the repository root without
+/// following links below that root: a link target is not this entry's checkout.
 fn check_removable(root: &Path, clone_dir: &str, path: &str) -> Result<PathBuf> {
     files::validate_relative("path", path)?;
     if !files::is_inside(clone_dir, path) {
@@ -77,6 +76,12 @@ fn check_removable(root: &Path, clone_dir: &str, path: &str) -> Result<PathBuf> 
     if !resolved.starts_with(&root_resolved) {
         return Err(Error::failure(format!(
             "refusing to delete {path}: it resolves outside the repository"
+        )));
+    }
+
+    if resolved != root_resolved.join(path) {
+        return Err(Error::failure(format!(
+            "refusing to delete {path}: it resolves through a symlink"
         )));
     }
 

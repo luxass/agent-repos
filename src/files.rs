@@ -7,7 +7,8 @@
 //! is what keeps `remove` from being talked into touching something outside
 //! the clone directory.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 
 use crate::ui::{Error, Result};
@@ -78,8 +79,8 @@ pub(crate) fn is_inside(dir: &str, path: &str) -> bool {
 ///
 /// A rename within a directory is atomic, so a reader never observes a
 /// half-written manifest or a truncated `AGENTS.md`, and an interrupted run
-/// leaves the original intact. The temporary file is removed if the rename
-/// fails.
+/// leaves the original intact. The temporary file is created exclusively and
+/// removed if writing or renaming fails.
 pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path
@@ -94,8 +95,20 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<()> {
 
     let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
 
-    fs::write(&temp, contents)
-        .map_err(|err| Error::failure(format!("could not write {}: {err}", temp.display())))?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|err| Error::failure(format!("could not create {}: {err}", temp.display())))?;
+    if let Err(err) = file.write_all(contents.as_bytes()) {
+        drop(file);
+        let _ = fs::remove_file(&temp);
+        return Err(Error::failure(format!(
+            "could not write {}: {err}",
+            temp.display()
+        )));
+    }
+    drop(file);
 
     // Keep the mode of the file being replaced, so an executable or
     // group-writable target does not silently change permissions.
@@ -115,4 +128,30 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atomic_write_leaves_an_occupied_temporary_path_untouched() {
+        let dir =
+            std::env::temp_dir().join(format!("agent-repos-atomic-write-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target.txt");
+        let temp = dir.join(format!(".target.txt.{}.tmp", std::process::id()));
+        fs::write(&target, "original\n").unwrap();
+        fs::write(&temp, "other data\n").unwrap();
+
+        assert!(write_atomic(&target, "replacement\n").is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original\n");
+        assert_eq!(fs::read_to_string(&temp).unwrap(), "other data\n");
+
+        fs::remove_file(&temp).unwrap();
+        write_atomic(&target, "replacement\n").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "replacement\n");
+        assert!(!temp.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
