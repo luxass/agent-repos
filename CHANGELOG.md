@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/luxass/agent-repos/compare/v0.0.3...v0.0.4) - 2026-10-12
+
+### 🐛 Bug Fixes
+
+- *(files)* create atomic-write temporary files exclusively (by @luxass)
+- *(remove)* refuse deletion through checkout symlinks (by @luxass)
+- *(git)* claim checkout directories before cloning (by @luxass)
+
+### Contributors
+
+* @luxass
+
 ## [0.0.3](https://github.com/luxass/agent-repos/compare/v0.0.2...v0.0.3) - 2026-08-08
 
 ### 🐛 Bug Fixes
