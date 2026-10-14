@@ -1,20 +1,21 @@
 # agent-repos
 
-`agent-repos` maintains pinned clones of reference repositories for coding
-agents. It resolves refs through Git, checks out the exact source a project
-depends on, and records the desired state in a committed manifest. Generated
-blocks keep `AGENTS.md` and `CLAUDE.md` in sync; local clones stay uncommitted.
+`agent-repos` keeps reference repositories locally for coding agents to read.
+Each copy uses a Git tag, branch, or commit (a ref).
+The tool records these choices (pins) in `.agent-repos/manifest.toml`.
+It updates marked sections in `AGENTS.md` and `CLAUDE.md`.
+Git ignores the local copies.
 
 ## Build
 
-agent-repos targets Rust 1.96.1 and requires Git on `PATH`.
+Use Rust 1.96.1 and make sure that Git is on `PATH`.
 
 ```sh
 cargo build --locked
 cargo test --locked
 ```
 
-Run the development build with `cargo run --`:
+Run the development build:
 
 ```sh
 cargo run -- --help
@@ -25,19 +26,18 @@ cargo run -- version
 
 | Invocation | Behavior |
 |------------|----------|
-| `agent-repos init` | Create `.agent-repos/manifest.toml` and seed instruction blocks |
-| `agent-repos add <url>` | Clone a repository and record an exact pin |
-| `agent-repos update <name>...` | Verify, repair, or move selected pins |
+| `agent-repos init` | Create `.agent-repos/manifest.toml` and instruction sections |
+| `agent-repos add <url>` | Copy a repository and record its pin |
+| `agent-repos update <name>...` | Repair selected copies or change their pins |
 | `agent-repos update --all --latest` | Move every entry to its latest available ref |
-| `agent-repos restore` | Restore clones missing from disk |
-| `agent-repos status` | Compare the manifest, clones, and instruction files |
+| `agent-repos restore` | Create missing local copies |
+| `agent-repos status` | Compare the configuration, local copies, and instruction files |
 | `agent-repos list --json` | Print configured repositories as JSON |
-| `agent-repos sync --check` | Exit 1 when generated instruction blocks have drifted |
-| `agent-repos remove <name>` | Remove an entry and its local clone |
-| `agent-repos pin <name>` | Freeze an entry at its checked-out commit |
+| `agent-repos sync --check` | Exit 1 when generated sections are out of date |
+| `agent-repos remove <name>` | Remove an entry and its local copy |
+| `agent-repos pin <name>` | Pin an entry to its current commit |
 
-Pass a full Git URL, local path, SCP-style SSH remote, or forge shorthand to
-`add`:
+For `add`, use a Git URL, local path, SCP-style SSH address, or repository shorthand:
 
 ```sh
 agent-repos add github:Effect-TS/effect --tag v3.12.0
@@ -47,25 +47,24 @@ agent-repos add github:better-auth/better-auth --use \
   'When working with Better Auth, inspect `.agent-repos/repos/better-auth/` first.'
 ```
 
-Command options control how entries are recorded and maintained:
+Without a ref flag, `add` pins the default branch's current commit.
+`agent-repos` never chooses a ref from a package manifest or lockfile.
 
-- `--tag`, `--branch`, and `--commit` select the ref kind.
-- Omitting a ref pins the default branch's current head commit.
-- `--name` and `--path` override the generated name and checkout path.
-- `--desc` explains why a repository is present; `--use` adds agent guidance
-  for when and how to consult it.
-- `update --to REF` moves an entry to a specific ref.
-- `update --latest` finds the newest tag or tracked branch head.
-- `--yes` accepts update and removal prompts.
-- `--no-sync` adds an entry without refreshing instruction files.
+Use these flags:
 
-Ref options are mutually exclusive. agent-repos never infers a ref from a
-package manifest or lockfile.
+- Select one of `--tag`, `--branch`, or `--commit`.
+- Use `--name` and `--path` to set the name and local path.
+- Use `--desc` to explain why the repository is present.
+- Use `--use` to tell agents when and how to read it.
+- Use `update --to REF` to select a ref.
+- Use `update --latest` to find the newest tag or tracked branch commit.
+- Use `--yes` to accept update and removal prompts.
+- Use `--no-sync` to add without updating instruction files.
 
 ## Configuration
 
-`.agent-repos/manifest.toml` records the desired state. Local clones live under
-`.agent-repos/repos/` by default and are ignored by Git.
+Commit `.agent-repos/manifest.toml` to share the pins and instruction file paths.
+Local copies default to `.agent-repos/repos/`, which Git ignores.
 
 ```toml
 version = 1
@@ -82,7 +81,7 @@ desc = "Effect runtime this service is built on"
 use = "When writing Effect code, inspect `.agent-repos/repos/effect/` for idiomatic APIs, tests, and module structure."
 ```
 
-Configured instruction files may contain generated blocks such as:
+Instruction files can contain marked sections:
 
 ```markdown
 <!-- agent-repos:guidance -->
@@ -92,16 +91,16 @@ Configured instruction files may contain generated blocks such as:
 <!-- /agent-repos:repos -->
 ```
 
-`agent-repos sync` refills those blocks while preserving all text outside them.
-Each non-empty `use` value becomes a named bullet in the generated guidance:
+`agent-repos sync` updates these sections and leaves all other text unchanged.
+Each non-empty `use` value becomes a bullet with the repository name:
 
 ```markdown
 - **effect** — When writing Effect code, inspect `.agent-repos/repos/effect/` for idiomatic APIs, tests, and module structure.
 ```
 
-The text is emitted as user-authored Markdown without path interpolation or
-generated wording. Edit `use` in `.agent-repos/manifest.toml`, then run
-`agent-repos sync` to refresh every configured instruction file.
+The tool copies your Markdown unchanged, without substituting paths.
+Edit `use` in `.agent-repos/manifest.toml`.
+Then run `agent-repos sync` to update all configured instruction files.
 
 ## Development
 
@@ -111,7 +110,6 @@ Run all repository checks with:
 just ci
 ```
 
-The release binary has no dependencies, is fully static on Linux musl targets,
-and must remain below 655,360 bytes. Contributors and coding agents should also
-read [AGENTS.md](AGENTS.md), which records the architecture and repository
-conventions.
+The release binary has no dependencies and must stay below 655,360 bytes.
+On Linux musl targets, it needs no shared libraries.
+Before contributing, read [AGENTS.md](AGENTS.md) for the code structure and repository rules.
